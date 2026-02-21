@@ -1,9 +1,15 @@
-azure-storage-blob==12.19.0
-opencensus-ext-azure==1.1.13
-psutil==5.9.8
-pyodbc==5.1.0
-requests==2.31.0
-transformers==4.38.2
+# --- Core AI/ML (Heavy Layers) ---
+numpy<2.0.0
 torch==2.2.1 --index-url https://download.pytorch.org/whl/cpu
+transformers==4.38.2
 sentencepiece==0.2.0
 protobuf==4.25.3
+
+# --- Azure & Infrastructure ---
+azure-storage-blob==12.19.0
+opencensus-ext-azure==1.1.13
+pyodbc==5.1.0
+
+# --- System & Utilities ---
+psutil==5.9.8
+requests==2.31.0
