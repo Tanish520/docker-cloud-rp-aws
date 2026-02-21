@@ -120,11 +120,6 @@ stages:
               set -e
               git config user.email "buildagent@yourorg.com"
               git config user.name  "Azure Pipelines"
-              # 🔥 STEP A: Fetch and Rebase to merge your VS Code changes safely
-              git pull origin main --rebase
-              git add *.resx
-              git commit -m "chore: add localized .resx files [skip ci]" || echo "No changes to commit"
-              git pull origin main --rebase
-              git push origin HEAD:main
+              
             workingDirectory: 'API_based_HFace_AppInsight' # <-- ADD THIS
             displayName: "🔄 Commit & Push localized .resx"
