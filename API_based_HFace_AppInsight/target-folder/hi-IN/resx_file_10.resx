@@ -1,0 +1,153 @@
+<?xml version='1.0' encoding='utf-8'?>
+<root>
+    <data name="String10_0" xml:space="preserve">
+        <value>Amazon पर ग्राहकों की समीक्षा साझा करें</value>
+    </data>
+    <data name="String10_1" xml:space="preserve">
+        <value>मिंत्र पर उपहार कार्ड सहेजें</value>
+    </data>
+    <data name="String10_2" xml:space="preserve">
+        <value>पूमा पर नए आगमन की समीक्षा करें</value>
+    </data>
+    <data name="String10_3" xml:space="preserve">
+        <value>ईवई पर नए आने वाले लोगों की खोज करें</value>
+    </data>
+    <data name="String10_4" xml:space="preserve">
+        <value>माइक्रोसॉफ्ट पर रेटिंग लागू करें</value>
+    </data>
+    <data name="String10_5" xml:space="preserve">
+        <value>Samsung पर सिफारिशों को अनुकूलित करें</value>
+    </data>
+    <data name="String10_6" xml:space="preserve">
+        <value>ईbay पर मूल्य प्रवृत्तियों का प्रबंधन करें</value>
+    </data>
+    <data name="String10_7" xml:space="preserve">
+        <value>Samsung पर खोज परिणाम ढूंढें</value>
+    </data>
+    <data name="String10_8" xml:space="preserve">
+        <value>वॉलमार्ट पर सदस्यता के लाभ देखें</value>
+    </data>
+    <data name="String10_9" xml:space="preserve">
+        <value>सैमल्सन पर मूल्यांकन जाँचें</value>
+    </data>
+    <data name="String10_10" xml:space="preserve">
+        <value>फ्लिपकार्ट पर सर्वोत्तम सौदे ट्रैक करें</value>
+    </data>
+    <data name="String10_11" xml:space="preserve">
+        <value>AliExpress पर रेटिंग खोजें</value>
+    </data>
+    <data name="String10_12" xml:space="preserve">
+        <value>एपल पर वरीयता सूची मद लागू करें</value>
+    </data>
+    <data name="String10_13" xml:space="preserve">
+        <value>फ्लिपकार्ट पर ग्राहकों की समीक्षाएं ढूंढें</value>
+    </data>
+    <data name="String10_14" xml:space="preserve">
+        <value>Amazon पर सदस्यता लाभों को ट्रैक करें</value>
+    </data>
+    <data name="String10_15" xml:space="preserve">
+        <value>एप्पल पर सट्टा कोड खोजें</value>
+    </data>
+    <data name="String10_16" xml:space="preserve">
+        <value>सहेजें सहेजा गया आइटम</value>
+    </data>
+    <data name="String10_17" xml:space="preserve">
+        <value>माइक्रोसॉफ्ट पर नए आने वाले को वापस लें</value>
+    </data>
+    <data name="String10_18" xml:space="preserve">
+        <value>AliExpress पर सदस्यता लाभ लागू करें</value>
+    </data>
+    <data name="String10_19" xml:space="preserve">
+        <value>मैन्ट्रा पर रैटिंग की अनुसूची</value>
+    </data>
+    <data name="String10_20" xml:space="preserve">
+        <value>पुमा पर सदस्यता प्राप्त करें</value>
+    </data>
+    <data name="String10_21" xml:space="preserve">
+        <value>ईbay पर मूल्य प्रवृत्तियों का अनुकूलन करें</value>
+    </data>
+    <data name="String10_22" xml:space="preserve">
+        <value>माइंट्रा पर ट्रैक रेटिंग</value>
+    </data>
+    <data name="String10_23" xml:space="preserve">
+        <value>माइक्रोसॉफ्ट पर ट्रैक सदस्यता</value>
+    </data>
+    <data name="String10_24" xml:space="preserve">
+        <value>Walmart पर सहेजा गया सामान खोजें</value>
+    </data>
+    <data name="String10_25" xml:space="preserve">
+        <value>Amazon पर Wishlist मदों को साझा करें</value>
+    </data>
+    <data name="String10_26" xml:space="preserve">
+        <value>Myntra पर ग्राहकों की समीक्षाओं का पता लगाएँ</value>
+    </data>
+    <data name="String10_27" xml:space="preserve">
+        <value>मिनट्रा पर अपने आदेशों की समीक्षा करें</value>
+    </data>
+    <data name="String10_28" xml:space="preserve">
+        <value>एप्पल पर उत्पाद विशेषताओं को सहेजें</value>
+    </data>
+    <data name="String10_29" xml:space="preserve">
+        <value>माइक्रोसॉफ्ट पर सहेजा गया वस्तुओं की जाँच करें</value>
+    </data>
+    <data name="String10_30" xml:space="preserve">
+        <value>जारा पर रेटिंग खोजें</value>
+    </data>
+    <data name="String10_31" xml:space="preserve">
+        <value>लक्ष्य पर छूट कोड खोजें</value>
+    </data>
+    <data name="String10_32" xml:space="preserve">
+        <value>लक्ष्य पर मूल्य प्रवृत्तियों को अनुसूचित करें</value>
+    </data>
+    <data name="String10_33" xml:space="preserve">
+        <value>माइक्रोसॉफ्ट पर सहेजा गया वस्तुओं का पता लगाएँ</value>
+    </data>
+    <data name="String10_34" xml:space="preserve">
+        <value>लक्ष्य पर शिपमेंट अद्यतन सहेजें</value>
+    </data>
+    <data name="String10_35" xml:space="preserve">
+        <value>AliExpress पर डिस्काउंट कोड ब्राउज करें</value>
+    </data>
+    <data name="String10_36" xml:space="preserve">
+        <value>AliExpress पर वरीयता सूची मदों का प्रबंधन करें</value>
+    </data>
+    <data name="String10_37" xml:space="preserve">
+        <value>गूगल पर उत्पाद विशेषताओं की तुलना करें</value>
+    </data>
+    <data name="String10_38" xml:space="preserve">
+        <value>माइक्रोसॉफ्ट पर वरीयता सूची मदों को सहेजें</value>
+    </data>
+    <data name="String10_39" xml:space="preserve">
+        <value>नाइकी पर वरीयता सूची वस्तुएँ खोजें</value>
+    </data>
+    <data name="String10_40" xml:space="preserve">
+        <value>नाइक पर मूल्य प्रवृत्तियों को लागू करें</value>
+    </data>
+    <data name="String10_41" xml:space="preserve">
+        <value>फ्लिपकार्ट पर ग्राहकों की समीक्षाएँ ब्राउज करें</value>
+    </data>
+    <data name="String10_42" xml:space="preserve">
+        <value>वॉलमार्ट पर सदस्यता का पता लगाएँ</value>
+    </data>
+    <data name="String10_43" xml:space="preserve">
+        <value>एप्पल पर अपने आदेशों का ट्रैक करें</value>
+    </data>
+    <data name="String10_44" xml:space="preserve">
+        <value>AliExpress पर ग्राहकों की समीक्षा रिडेम करें</value>
+    </data>
+    <data name="String10_45" xml:space="preserve">
+        <value>गूगल पर सदस्यता खोजें</value>
+    </data>
+    <data name="String10_46" xml:space="preserve">
+        <value>गूगल पर अपनी क्रमाएं ढूंढें</value>
+    </data>
+    <data name="String10_47" xml:space="preserve">
+        <value>AliExpress पर सिफारिशों की समीक्षा करें</value>
+    </data>
+    <data name="String10_48" xml:space="preserve">
+        <value>नाइक पर उत्पाद विशेषताओं को लागू करें</value>
+    </data>
+    <data name="String10_49" xml:space="preserve">
+        <value>Amazon पर उत्पाद विशेषताओं को सहेजें</value>
+    </data>
+</root>

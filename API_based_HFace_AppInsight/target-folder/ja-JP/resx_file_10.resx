@@ -1,0 +1,153 @@
+<?xml version='1.0' encoding='utf-8'?>
+<root>
+    <data name="String10_0" xml:space="preserve">
+        <value>Amazonのカスタマーレビューを共有</value>
+    </data>
+    <data name="String10_1" xml:space="preserve">
+        <value>Myntraでギフトカードを保存</value>
+    </data>
+    <data name="String10_2" xml:space="preserve">
+        <value>Pumaの新規到着者レビュー</value>
+    </data>
+    <data name="String10_3" xml:space="preserve">
+        <value>eBayで新規来店者を発見</value>
+    </data>
+    <data name="String10_4" xml:space="preserve">
+        <value>Microsoftで評価を適用</value>
+    </data>
+    <data name="String10_5" xml:space="preserve">
+        <value>Samsung 上の推奨事項を最適化</value>
+    </data>
+    <data name="String10_6" xml:space="preserve">
+        <value>eBayで価格トレンドを管理</value>
+    </data>
+    <data name="String10_7" xml:space="preserve">
+        <value>Samsungで検索結果を検索</value>
+    </data>
+    <data name="String10_8" xml:space="preserve">
+        <value>Walmartのメンバーシップ特典を参照</value>
+    </data>
+    <data name="String10_9" xml:space="preserve">
+        <value>Samsungの評価をチェック</value>
+    </data>
+    <data name="String10_10" xml:space="preserve">
+        <value>Flipkartで最高の取引を追跡</value>
+    </data>
+    <data name="String10_11" xml:space="preserve">
+        <value>AliExpressで評価を検索</value>
+    </data>
+    <data name="String10_12" xml:space="preserve">
+        <value>Apple で Wishlist アイテムを適用</value>
+    </data>
+    <data name="String10_13" xml:space="preserve">
+        <value>Flipkartのカスタマーレビューを探す</value>
+    </data>
+    <data name="String10_14" xml:space="preserve">
+        <value>Amazonのメンバーシップのメリットを追跡</value>
+    </data>
+    <data name="String10_15" xml:space="preserve">
+        <value>Appleの割引コードを検索</value>
+    </data>
+    <data name="String10_16" xml:space="preserve">
+        <value>Myntraで保存したアイテムを保存</value>
+    </data>
+    <data name="String10_17" xml:space="preserve">
+        <value>マイクロソフトで新規来店者を払い戻す</value>
+    </data>
+    <data name="String10_18" xml:space="preserve">
+        <value>AliExpressでメンバーシップ特典を適用</value>
+    </data>
+    <data name="String10_19" xml:space="preserve">
+        <value>Myntraのスケジューリング評価</value>
+    </data>
+    <data name="String10_20" xml:space="preserve">
+        <value>Pumaのサブスクリプションを探検</value>
+    </data>
+    <data name="String10_21" xml:space="preserve">
+        <value>eBayで価格トレンドを最適化</value>
+    </data>
+    <data name="String10_22" xml:space="preserve">
+        <value>Myntraでトラックの評価</value>
+    </data>
+    <data name="String10_23" xml:space="preserve">
+        <value>マイクロソフト上のトラックサブスクリプション</value>
+    </data>
+    <data name="String10_24" xml:space="preserve">
+        <value>ウォルマートで保存されたアイテムを発見</value>
+    </data>
+    <data name="String10_25" xml:space="preserve">
+        <value>Amazonで Wishlist アイテムを共有</value>
+    </data>
+    <data name="String10_26" xml:space="preserve">
+        <value>Myntraのカスタマーレビューをご覧ください</value>
+    </data>
+    <data name="String10_27" xml:space="preserve">
+        <value>Myntraでご注文をレビュー</value>
+    </data>
+    <data name="String10_28" xml:space="preserve">
+        <value>Apple で製品機能を保存</value>
+    </data>
+    <data name="String10_29" xml:space="preserve">
+        <value>Microsoftで保存された項目を確認</value>
+    </data>
+    <data name="String10_30" xml:space="preserve">
+        <value>Zaraの検索評価</value>
+    </data>
+    <data name="String10_31" xml:space="preserve">
+        <value>ターゲットで割引コードを検索</value>
+    </data>
+    <data name="String10_32" xml:space="preserve">
+        <value>ターゲットの価格動向をスケジュール</value>
+    </data>
+    <data name="String10_33" xml:space="preserve">
+        <value>Microsoftで保存されたアイテムを探索</value>
+    </data>
+    <data name="String10_34" xml:space="preserve">
+        <value>ターゲットで更新された出荷を保存</value>
+    </data>
+    <data name="String10_35" xml:space="preserve">
+        <value>AliExpressで割引コードを参照</value>
+    </data>
+    <data name="String10_36" xml:space="preserve">
+        <value>AliExpressでウィッシュリスト項目を管理</value>
+    </data>
+    <data name="String10_37" xml:space="preserve">
+        <value>Googleで製品の機能を比較</value>
+    </data>
+    <data name="String10_38" xml:space="preserve">
+        <value>Microsoftでウィッシュリスト項目を保存</value>
+    </data>
+    <data name="String10_39" xml:space="preserve">
+        <value>ナイキの Wishlist アイテムを検索</value>
+    </data>
+    <data name="String10_40" xml:space="preserve">
+        <value>Nike に価格トレンドを適用</value>
+    </data>
+    <data name="String10_41" xml:space="preserve">
+        <value>Flipkartのカスタマーレビューを参照</value>
+    </data>
+    <data name="String10_42" xml:space="preserve">
+        <value>ウォルマートでのサブスクリプションを探索</value>
+    </data>
+    <data name="String10_43" xml:space="preserve">
+        <value>Appleでご注文を追跡</value>
+    </data>
+    <data name="String10_44" xml:space="preserve">
+        <value>AliExpressのカスタマーレビューをリデム</value>
+    </data>
+    <data name="String10_45" xml:space="preserve">
+        <value>Googleでのサブスクリプションの探索</value>
+    </data>
+    <data name="String10_46" xml:space="preserve">
+        <value>Googleで注文を検索</value>
+    </data>
+    <data name="String10_47" xml:space="preserve">
+        <value>アリエクスプレスに関する勧告をレビュー</value>
+    </data>
+    <data name="String10_48" xml:space="preserve">
+        <value>Nike に製品機能を適用</value>
+    </data>
+    <data name="String10_49" xml:space="preserve">
+        <value>Amazonで製品機能を保存</value>
+    </data>
+</root>

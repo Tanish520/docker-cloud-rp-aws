@@ -1,0 +1,127 @@
+trigger: none
+stages:
+  - stage: Phase1
+    displayName: "1️⃣ Extract & Upload"
+    jobs:
+      - job: Extract
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+
+          # 🔐 Inject secrets into config.json
+          - script: |
+              set -ex
+              sudo apt-get update && sudo apt-get install -y jq
+              jq '.blob_connection_string = env.AZURE_STORAGE_CONN |
+                  .sql_conn_str = env.AZURE_SQL_CONN |
+                  .hf_api_token = env.HUGGINGFACE_TOKEN' config.json > config.tmp.json
+              mv config.tmp.json config.json
+            env:
+              AZURE_STORAGE_CONN: $(AZURE_STORAGE_CONN)
+              AZURE_SQL_CONN: $(AZURE_SQL_CONN)
+              HUGGINGFACE_TOKEN: $(HUGGINGFACE_TOKEN)
+            displayName: "Inject secrets into config.json"
+
+          - script: |
+              set -e
+              python3 -m pip install azure-storage-blob
+              echo "🚀 Starting Phase1 extraction..."
+              python3 phase1.py config.json 2>&1 | tee phase1.log
+              echo "✅ Phase1 completed. Full log saved to phase1.log"
+            workingDirectory: 'API_based_HFace_AppInsight' # <-- ADD THIS
+            displayName: "Run Phase1"
+
+  - stage: Phase2
+    displayName: "2️⃣ Translate (Docker + Local mBART)"
+    dependsOn: Phase1
+    condition: succeeded()
+    jobs:
+      - job: Translate
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+
+          # Inject secrets into config.json
+          - script: |
+              set -ex
+              sudo apt-get update && sudo apt-get install -y jq
+              jq '.blob_connection_string = env.AZURE_STORAGE_CONN |
+                  .sql_conn_str = env.AZURE_SQL_CONN |
+                  .app_insights_connection_string = env.APPINSIGHTS_CONNECTION_STRING' config.json > config.tmp.json
+              mv config.tmp.json config.json
+            env:
+              AZURE_STORAGE_CONN: $(AZURE_STORAGE_CONN)
+              AZURE_SQL_CONN: $(AZURE_SQL_CONN)
+              APPINSIGHTS_CONNECTION_STRING: $(APPINSIGHTS_CONNECTION_STRING)
+            workingDirectory: 'Docker_Local_Inference' 
+            displayName: "Inject secrets into config.json"
+
+          # Build the Docker Image
+          - script: |
+              set -e
+              echo "🚀 Building Docker Image (Downloading mBART-50)..."
+              docker build -t local-ai-translator .
+            workingDirectory: 'Docker_Local_Inference' 
+            displayName: "Build Docker Image"
+
+          # Run the Docker Image
+          - script: |
+              set -e
+              echo "🚀 Running Translation inside Docker..."
+              # -v mounts the current folder so the container can read config.json and save logs
+              docker run -v $(pwd):/app local-ai-translator python translation.py config.json 2>&1 | tee phase2.log
+              echo "✅ Phase2 completed. Full log saved to phase2.log"
+            workingDirectory: 'Docker_Local_Inference'
+            displayName: "Run Phase2 (Docker Inference)"
+
+  - stage: Phase3
+    displayName: "3️⃣ Integrate, Commit & Push"
+    dependsOn: Phase2
+    condition: succeeded()
+    jobs:
+      - job: Integrate
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+            persistCredentials: true
+
+          # Inject secrets again
+          - script: |
+              set -ex
+              sudo apt-get update && sudo apt-get install -y jq
+              jq '.blob_connection_string = env.AZURE_STORAGE_CONN |
+                  .sql_conn_str = env.AZURE_SQL_CONN |
+                  .hf_api_token = env.HUGGINGFACE_TOKEN' config.json > config.tmp.json
+              mv config.tmp.json config.json
+            env:
+              AZURE_STORAGE_CONN: $(AZURE_STORAGE_CONN)
+              AZURE_SQL_CONN: $(AZURE_SQL_CONN)
+              HUGGINGFACE_TOKEN: $(HUGGINGFACE_TOKEN)
+            workingDirectory: 'API_based_HFace_AppInsight' # <-- ADD THIS
+            displayName: "Inject secrets into config.json"
+
+          - script: |
+              set -e
+              python3 -m pip install azure-storage-blob
+              echo "🚀 Starting Phase3 integration..."
+              python3 phase3.py config.json 2>&1 | tee phase3.log
+              echo "✅ Phase3 completed. Full log saved to phase3.log"
+            workingDirectory: 'API_based_HFace_AppInsight' # <-- ADD THIS
+            displayName: "Run Phase3"
+
+          # Commit localized resx back to repo
+          - script: |
+              set -e
+              git config user.email "buildagent@yourorg.com"
+              git config user.name  "Azure Pipelines"
+              # 🔥 STEP A: Fetch and Rebase to merge your VS Code changes safely
+              git pull origin main --rebase
+              git add *.resx
+              git commit -m "chore: add localized .resx files [skip ci]" || echo "No changes to commit"
+              git pull origin main --rebase
+              git push origin HEAD:main
+            workingDirectory: 'API_based_HFace_AppInsight' # <-- ADD THIS
+            displayName: "🔄 Commit & Push localized .resx"

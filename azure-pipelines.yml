@@ -1,0 +1,108 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+jobs:
+  - job: Execute_Functions
+    steps:
+      - checkout: self
+        persistCredentials: true
+        
+      - task: PowerShell@2
+        displayName: 'Install Required Modules'
+        inputs:
+          targetType: 'inline'
+          script: |
+            Write-Host "Installing Az.Storage module..."
+            Install-Module -Name Az.Storage -Force -Scope CurrentUser -AllowClobber -Repository PSGallery
+            
+            Write-Host "Installing SqlServer module..."
+            Install-Module -Name SqlServer -Force -Scope CurrentUser -AllowClobber -Repository PSGallery
+            
+            Write-Host "Modules installed successfully"
+            Get-Module -ListAvailable Az.Storage, SqlServer | Format-Table Name, Version
+          pwsh: true
+
+      - task: PowerShell@2
+        displayName: 'Inject Secrets into Config (Optional)'
+        inputs:
+          targetType: 'inline'
+          script: |
+            $configPath = "config.json"
+            Write-Host "Checking for secret injection..."
+            
+            # Debug: Show what we're receiving
+            Write-Host "DEBUG: AZURE_STORAGE_CONN length: $($env:AZURE_STORAGE_CONN.Length)"
+            Write-Host "DEBUG: AZURE_SQL_CONN length: $($env:AZURE_SQL_CONN.Length)"
+            Write-Host "DEBUG: AZURE_COG_API_KEY length: $($env:AZURE_COG_API_KEY.Length)"
+            Write-Host "DEBUG: AZURE_STORAGE_CONN starts with: $($env:AZURE_STORAGE_CONN.Substring(0, [Math]::Min(50, $env:AZURE_STORAGE_CONN.Length)))"
+            
+            if (Test-Path $configPath) {
+              $config = Get-Content $configPath | ConvertFrom-Json
+              $modified = $false
+              
+              # Inject if environment variables have real values (not empty, not the variable placeholder)
+              if ($env:AZURE_STORAGE_CONN -and $env:AZURE_STORAGE_CONN.Length -gt 10) {
+                Write-Host "✓ Injecting Azure Storage connection string (length: $($env:AZURE_STORAGE_CONN.Length))"
+                $config.ConnectionString = $env:AZURE_STORAGE_CONN
+                $modified = $true
+              } else {
+                Write-Host "Using connection string from config.json"
+              }
+              
+              if ($env:AZURE_SQL_CONN -and $env:AZURE_SQL_CONN.Length -gt 10) {
+                Write-Host "✓ Injecting SQL connection string (length: $($env:AZURE_SQL_CONN.Length))"
+                $config.SQLConnectionString = $env:AZURE_SQL_CONN
+                $modified = $true
+              } else {
+                Write-Host "Using SQL connection string from config.json"
+              }
+              
+              if ($env:AZURE_COG_API_KEY -and $env:AZURE_COG_API_KEY.Length -gt 10) {
+                Write-Host "✓ Injecting Azure Cognitive Services API key (length: $($env:AZURE_COG_API_KEY.Length))"
+                $config.AzureCognitiveServiceAPIKey = $env:AZURE_COG_API_KEY
+                $modified = $true
+              } else {
+                Write-Host "Using API key from config.json"
+              }
+              
+              if ($modified) {
+                $config | ConvertTo-Json -Depth 10 | Set-Content $configPath
+                Write-Host "✓✓✓ Config updated with injected secrets ✓✓✓"
+              } else {
+                Write-Host "No secrets to inject, using config.json values"
+              }
+            } else {
+              Write-Warning "Config file not found at $configPath"
+            }
+          pwsh: true
+        env:
+          AZURE_STORAGE_CONN: $(AZURE_STORAGE_CONN)
+          AZURE_SQL_CONN: $(AZURE_SQL_CONN)
+          AZURE_COG_API_KEY: $(AZURE_COG_API_KEY)
+
+      - task: PowerShell@2
+        displayName: 'Run Function1 - Extract & Upload'
+        inputs:
+          filePath: 'scripts/function1.ps1'
+          pwsh: true
+        continueOnError: true
+
+      - task: PowerShell@2
+        displayName: 'Run Function2 - Translate'
+        inputs:
+          filePath: 'scripts/function2.ps1'
+          pwsh: true
+        continueOnError: true
+        
+      - task: PublishBuildArtifacts@1
+        displayName: 'Publish Logs'
+        condition: always()
+        inputs:
+          PathtoPublish: 'logs'
+          ArtifactName: 'logs'
+          publishLocation: 'Container'

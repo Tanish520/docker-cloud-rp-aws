@@ -1,0 +1,23 @@
+{
+  "blob_connection_string": "DefaultEndpointsProtocol=https;AccountName=sandeep123;AccountKey=Vaz+smSCIBQR+gubVG/wPm6z5CChlybRYVEn+VYCuFWFe9O8a8PXl4EIewvpjmLDCBD3moAsjZcX+AStODM/8A==;EndpointSuffix=core.windows.net",
+  "sql_conn_str": "Driver={ODBC Driver 18 for SQL Server};Server=tcp:database-server-translation.database.windows.net,1433;Database=TranslationDB;Uid=sandeep;Pwd=Sandy@123;Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;",
+  "SourceRepoPath": "source-folder",
+  "TargetLanguages": [
+    "fr-FR",
+    "es-ES",
+    "hi-IN",
+    "de-DE",
+    "ja-JP",
+    "ru-RU",
+    "zh-CN"
+  ],
+  "raw_container": "raw-files",
+  "translated_container": "trans-files",
+  "hf_models": {
+    "default": "facebook/mbart-large-50-many-to-many-mmt"
+  },
+  "hf_api_token": "__HF_TOKEN__",
+  "TargetResxPath": "target-folder",
+  "vm_ip": "20.244.31.97",  // The IP address of the VM hosting FastAPI
+  "vm_port": 8000           // The port on which FastAPI is running
+}

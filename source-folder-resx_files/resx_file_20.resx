@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="utf-8"?>  
+<root>  
+    <data name="String1_0" xml:space="preserve">  
+        <value>Create New Support Ticket</value>  
+    </data>  
+    <data name="String1_1" xml:space="preserve">  
+        <value>Update Ticket Status</value>  
+    </data>  
+    <data name="String1_2" xml:space="preserve">  
+        <value>View All Tickets</value>  
+    </data>  
+    <data name="String1_3" xml:space="preserve">  
+        <value>Assign Support Agent</value>  
+    </data>  
+    <data name="String1_4" xml:space="preserve">  
+        <value>Review Customer Feedback</value>  
+    </data>  
+    <data name="String1_5" xml:space="preserve">  
+        <value>Close Support Ticket</value>  
+    </data>  
+    <data name="String1_6" xml:space="preserve">  
+        <value>Search Support Tickets</value>  
+    </data>  
+    <data name="String1_7" xml:space="preserve">  
+        <value>Ticket History Log</value>  
+    </data>  
+    <data name="String1_8" xml:space="preserve">  
+        <value>Edit Ticket Details</value>  
+    </data>  
+    <data name="String1_9" xml:space="preserve">  
+        <value>Notify Agent of New Ticket</value>  
+    </data>  
+    <data name="String1_10" xml:space="preserve">  
+        <value>Launch Marketing Campaign</value>  
+    </data>  
+    <data name="String1_11" xml:space="preserve">  
+        <value>Track Campaign Performance</value>  
+    </data>  
+    <data name="String1_12" xml:space="preserve">  
+        <value>Create New Email Template</value>  
+    </data>  
+    <data name="String1_13" xml:space="preserve">  
+        <value>Segment Customer List</value>  
+    </data>  
+    <data name="String1_14" xml:space="preserve">  
+        <value>Analyze Campaign Metrics</value>  
+    </data>  
+    <data name="String1_15" xml:space="preserve">  
+        <value>Schedule Social Media Posts</value>  
+    </data>  
+    <data name="String1_16" xml:space="preserve">  
+        <value>Generate Marketing Reports</value>  
+    </data>  
+    <data name="String1_17" xml:space="preserve">  
+        <value>A/B Test Campaign Strategies</value>  
+    </data>  
+    <data name="String1_18" xml:space="preserve">  
+        <value>Create Lead Capture Form</value>  
+    </data>  
+    <data name="String1_19" xml:space="preserve">  
+        <value>Update Campaign Settings</value>  
+    </data>  
+    <data name="String1_20" xml:space="preserve">  
+        <value>Create New User Account</value>  
+    </data>  
+    <data name="String1_21" xml:space="preserve">  
+        <value>Delete User Account Confirmation</value>  
+    </data>  
+    <data name="String1_22" xml:space="preserve">  
+        <value>Password Reset Request</value>  
+    </data>  
+    <data name="String1_23" xml:space="preserve">  
+        <value>Update User Profile</value>  
+    </data>  
+    <data name="String1_24" xml:space="preserve">  
+        <value>Assign User Roles</value>  
+    </data>  
+    <data name="String1_25" xml:space="preserve">  
+        <value>View User Activity Log</value>  
+    </data>  
+    <data name="String1_26" xml:space="preserve">  
+        <value>Send Welcome Email</value>  
+    </data>  
+    <data name="String1_27" xml:space="preserve">  
+        <value>Deactivate User Account</value>  
+    </data>  
+    <data name="String1_28" xml:space="preserve">  
+        <value>User Access Management</value>  
+    </data>  
+    <data name="String1_29" xml:space="preserve">  
+        <value>Audit User Permissions</value>  
+    </data>  
+    <data name="String1_30" xml:space="preserve">  
+        <value>Track Sales Opportunities</value>  
+    </data>  
+    <data name="String1_31" xml:space="preserve">  
+        <value>Create New Sales Opportunity</value>  
+    </data>  
+    <data name="String1_32" xml:space="preserve">  
+        <value>Follow Up on Leads</value>  
+    </data>  
+    <data name="String1_33" xml:space="preserve">  
+        <value>Update Opportunity Status</value>  
+    </data>  
+    <data name="String1_34" xml:space="preserve">  
+        <value>Generate Sales Forecast</value>  
+    </data>  
+    <data name="String1_35" xml:space="preserve">  
+        <value>View Sales Performance Dashboard</value>  
+    </data>  
+    <data name="String1_36" xml:space="preserve">  
+        <value>Set Sales Goals</value>  
+    </data>  
+    <data name="String1_37" xml:space="preserve">  
+        <value>How to bake a cake</value>  
+    </data>  
+    <data name="String1_38" xml:space="preserve">  
+        <value>Budget-friendly vacation spots</value>  
+    </data>  
+    <data name="String1_39" xml:space="preserve">  
+        <value>Best online learning platforms</value>  
+    </data>  
+    <data name="String1_40" xml:space="preserve">  
+        <value>How to troubleshoot Wi-Fi</value>  
+    </data>  
+    <data name="String1_41" xml:space="preserve">  
+        <value>How to stay updated on news</value>  
+    </data>  
+    <data name="String1_42" xml:space="preserve">  
+        <value>Best gaming PCs</value>  
+    </data>  
+    <data name="String1_43" xml:space="preserve">  
+        <value>Latest Android updates</value>  
+    </data>  
+    <data name="String1_44" xml:space="preserve">  
+        <value>How to use Google Sheets</value>  
+    </data>  
+    <data name="String1_45" xml:space="preserve">  
+        <value>Shopping trends on Amazon</value>  
+    </data>  
+    <data name="String1_46" xml:space="preserve">  
+        <value>Best deals on Flipkart</value>  
+    </data>  
+    <data name="String1_47" xml:space="preserve">  
+        <value>How to boost productivity</value>  
+    </data>  
+    <data name="String1_48" xml:space="preserve">  
+        <value>How to start a blog</value>  
+    </data>  
+    <data name="String1_49" xml:space="preserve">  
+        <value>Business growth strategies</value>  
+    </data>  
+    <data name="String1_50" xml:space="preserve">  
+        <value>Best smartwatches 2024</value>  
+    </data>  
+</root>

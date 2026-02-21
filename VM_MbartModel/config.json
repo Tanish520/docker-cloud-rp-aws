@@ -1,0 +1,23 @@
+{
+  "blob_connection_string": "__BLOB_CONN__", 
+  "sql_conn_str": "__SQL_CONN__", 
+  "SourceRepoPath": "source-folder",
+  "TargetLanguages": [
+    "fr-FR",
+    "es-ES",
+    "hi-IN",
+    "de-DE",
+    "ja-JP",
+    "ru-RU",
+    "zh-CN"
+  ],
+  "raw_container": "raw-files",
+  "translated_container": "trans-files",
+  "hf_models": {
+    "default": "facebook/mbart-large-50-many-to-many-mmt"
+  },
+  "hf_api_token": "__HF_TOKEN__", 
+  "TargetResxPath": "target-folder",
+  "vm_ip": "$(VM_IP)", 
+  "vm_port": "$(VM_PORT)"  
+}

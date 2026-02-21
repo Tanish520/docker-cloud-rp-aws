@@ -1,0 +1,307 @@
+# trigger:
+#   branches:
+#     include:
+#       - main
+
+# stages:
+#   - stage: Phase1
+#     displayName: "1️⃣ Extract & Upload"
+#     jobs:
+#       - job: Extract
+#         pool:
+#           vmImage: ubuntu-latest
+#         steps:
+#           - checkout: self
+
+#           # 🔐 Inject secrets into config.json
+#           - script: |
+#               set -ex
+#               sudo apt-get update && sudo apt-get install -y jq
+#               jq '.blob_connection_string = env.AZURE_STORAGE_CONN |
+#                   .sql_conn_str = env.AZURE_SQL_CONN |
+#                   .hf_api_token = env.HUGGINGFACE_TOKEN' config.json > config.tmp.json
+#               mv config.tmp.json config.json
+#             env:
+#               AZURE_STORAGE_CONN: $(AZURE_STORAGE_CONN)
+#               AZURE_SQL_CONN: $(AZURE_SQL_CONN)
+#               HUGGINGFACE_TOKEN: $(HUGGINGFACE_TOKEN)
+#             displayName: "Inject secrets into config.json"
+
+#           - script: |
+#               set -e
+#               python3 -m pip install azure-storage-blob
+#               echo "🚀 Starting Phase1 extraction..."
+#               python3 phase1.py config.json 2>&1 | tee phase1.log
+#               echo "✅ Phase1 completed. Full log saved to phase1.log"
+#             displayName: "Run Phase1"
+
+#   - stage: Phase2
+#     displayName: "2️⃣ Translate (SQL + mBART)"
+#     dependsOn: Phase1
+#     condition: succeeded()
+#     jobs:
+#       - job: Translate
+#         pool:
+#           vmImage: ubuntu-latest
+#         steps:
+#           - checkout: self
+
+#           # Install ODBC driver + sqlcmd + jq, inject secrets
+#           - script: |
+#               set -ex
+#               curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+#               curl https://packages.microsoft.com/config/ubuntu/20.04/prod.list | sudo tee /etc/apt/sources.list.d/msprod.list
+#               sudo apt-get update
+#               sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 mssql-tools18 unixodbc-dev jq
+              
+#               # ✅ make sqlcmd available
+#               echo 'export PATH="$PATH:/opt/mssql-tools18/bin"' >> ~/.bashrc
+#               export PATH="$PATH:/opt/mssql-tools18/bin"
+
+#               # inject secrets into config.json
+#               jq '.blob_connection_string = env.AZURE_STORAGE_CONN |
+#                   .sql_conn_str = env.AZURE_SQL_CONN |
+#                   .hf_api_token = env.HUGGINGFACE_TOKEN' config.json > config.tmp.json
+#               mv config.tmp.json config.json
+#             env:
+#               AZURE_STORAGE_CONN: $(AZURE_STORAGE_CONN)
+#               AZURE_SQL_CONN: $(AZURE_SQL_CONN)
+#               HUGGINGFACE_TOKEN: $(HUGGINGFACE_TOKEN)
+#             displayName: "Install ODBC + Inject secrets"
+
+#           # ✅ Pre-check SQL connectivity
+#           - script: |
+#               set -e
+#               export PATH="$PATH:/opt/mssql-tools18/bin"
+#               echo "Testing SQL connection..."
+
+#               SERVER=$(echo $AZURE_SQL_CONN | sed -n 's/.*Server=tcp:\([^;]*\).*/\1/p')
+#               DB=$(echo $AZURE_SQL_CONN | sed -n 's/.*Database=\([^;]*\).*/\1/p')
+#               USER=$(echo $AZURE_SQL_CONN | sed -n 's/.*Uid=\([^;]*\).*/\1/p')
+#               PASS=$(echo $AZURE_SQL_CONN | sed -n 's/.*Pwd=\([^;]*\).*/\1/p')
+
+#               echo "Extracted values:"
+#               echo "  SERVER=$SERVER"
+#               echo "  DB=$DB"
+#               echo "  USER=$USER"
+#               echo "  PASS length: ${#PASS}"
+
+#               echo "Running SQLCMD..."
+#               echo "SELECT @@VERSION;" | sqlcmd -S tcp:$SERVER -d $DB -U $USER -P $PASS -C
+#             env:
+#               AZURE_SQL_CONN: $(AZURE_SQL_CONN)
+#             displayName: "Pre-check: Test SQL Connectivity"
+
+#           # Run Phase2 translation with detailed logs
+#           - script: |
+#               set -e
+#               python3 -m pip install azure-storage-blob requests pyodbc
+#               echo "🚀 Starting Phase2 translation..."
+#               python3 translation.py config.json 2>&1 | tee phase2.log
+#               echo "✅ Phase2 completed. Full log saved to phase2.log"
+#             displayName: "Run Phase2 (mBART + SQL TM)"
+
+#   - stage: Phase3
+#     displayName: "3️⃣ Integrate, Commit & Push"
+#     dependsOn: Phase2
+#     condition: succeeded()
+#     jobs:
+#       - job: Integrate
+#         pool:
+#           vmImage: ubuntu-latest
+#         steps:
+#           - checkout: self
+#             persistCredentials: true
+
+#           # Inject secrets again
+#           - script: |
+#               set -ex
+#               sudo apt-get update && sudo apt-get install -y jq
+#               jq '.blob_connection_string = env.AZURE_STORAGE_CONN |
+#                   .sql_conn_str = env.AZURE_SQL_CONN |
+#                   .hf_api_token = env.HUGGINGFACE_TOKEN' config.json > config.tmp.json
+#               mv config.tmp.json config.json
+#             env:
+#               AZURE_STORAGE_CONN: $(AZURE_STORAGE_CONN)
+#               AZURE_SQL_CONN: $(AZURE_SQL_CONN)
+#               HUGGINGFACE_TOKEN: $(HUGGINGFACE_TOKEN)
+#             displayName: "Inject secrets into config.json"
+
+#           - script: |
+#               set -e
+#               python3 -m pip install azure-storage-blob
+#               echo "🚀 Starting Phase3 integration..."
+#               python3 phase3.py config.json 2>&1 | tee phase3.log
+#               echo "✅ Phase3 completed. Full log saved to phase3.log"
+#             displayName: "Run Phase3"
+
+#           # Commit localized resx back to repo
+#           - script: |
+#               set -e
+#               git config user.email "buildagent@yourorg.com"
+#               git config user.name  "Azure Pipelines"
+#               git add target-folder/
+#               git commit -m "chore: add localized .resx files [skip ci]" || echo "No changes to commit"
+#               git push origin HEAD:main
+#             displayName: "🔄 Commit & Push localized .resx"
+
+
+
+trigger:
+  branches:
+    include:
+      - main
+
+stages:
+  - stage: Phase1
+    displayName: "1️⃣ Extract & Upload"
+    jobs:
+      - job: Extract
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+
+          # 🔐 Inject secrets into config.json
+          - script: |
+              set -ex
+              sudo apt-get update && sudo apt-get install -y jq
+              jq '.blob_connection_string = env.AZURE_STORAGE_CONN |
+                  .sql_conn_str = env.AZURE_SQL_CONN |
+                  .hf_api_token = env.HUGGINGFACE_TOKEN |
+                  .vm_ip = env.VM_IP |
+                  .vm_port = env.VM_PORT' config.json > config.tmp.json
+              mv config.tmp.json config.json
+            env:
+              AZURE_STORAGE_CONN: $(AZURE_STORAGE_CONN)
+              AZURE_SQL_CONN: $(AZURE_SQL_CONN)
+              HUGGINGFACE_TOKEN: $(HUGGINGFACE_TOKEN)
+              VM_IP: $(VM_IP)
+              VM_PORT: $(VM_PORT)
+            displayName: "Inject secrets into config.json"
+
+          - script: |
+              set -e
+              python3 -m pip install azure-storage-blob
+              echo "🚀 Starting Phase1 extraction..."
+              python3 phase1.py config.json 2>&1 | tee phase1.log
+              echo "✅ Phase1 completed. Full log saved to phase1.log"
+            displayName: "Run Phase1"
+
+  - stage: Phase2
+    displayName: "2️⃣ Translate (SQL + mBART)"
+    dependsOn: Phase1
+    condition: succeeded()
+    jobs:
+      - job: Translate
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+
+          # Install ODBC driver + sqlcmd + jq, inject secrets
+          - script: |
+              set -ex
+              curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+              curl https://packages.microsoft.com/config/ubuntu/20.04/prod.list | sudo tee /etc/apt/sources.list.d/msprod.list
+              sudo apt-get update
+              sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 mssql-tools18 unixodbc-dev jq
+              
+              # ✅ make sqlcmd available
+              echo 'export PATH="$PATH:/opt/mssql-tools18/bin"' >> ~/.bashrc
+              export PATH="$PATH:/opt/mssql-tools18/bin"
+
+              # inject secrets into config.json
+              jq '.blob_connection_string = env.AZURE_STORAGE_CONN |
+                  .sql_conn_str = env.AZURE_SQL_CONN |
+                  .hf_api_token = env.HUGGINGFACE_TOKEN |
+                  .vm_ip = env.VM_IP |
+                  .vm_port = env.VM_PORT' config.json > config.tmp.json
+              mv config.tmp.json config.json
+            env:
+              AZURE_STORAGE_CONN: $(AZURE_STORAGE_CONN)
+              AZURE_SQL_CONN: $(AZURE_SQL_CONN)
+              HUGGINGFACE_TOKEN: $(HUGGINGFACE_TOKEN)
+              VM_IP: $(VM_IP)
+              VM_PORT: $(VM_PORT)
+            displayName: "Install ODBC + Inject secrets"
+
+          # ✅ Pre-check SQL connectivity
+          - script: |
+              set -e
+              export PATH="$PATH:/opt/mssql-tools18/bin"
+              echo "Testing SQL connection..."
+
+              SERVER=$(echo $AZURE_SQL_CONN | sed -n 's/.*Server=tcp:\([^;]*\).*/\1/p')
+              DB=$(echo $AZURE_SQL_CONN | sed -n 's/.*Database=\([^;]*\).*/\1/p')
+              USER=$(echo $AZURE_SQL_CONN | sed -n 's/.*Uid=\([^;]*\).*/\1/p')
+              PASS=$(echo $AZURE_SQL_CONN | sed -n 's/.*Pwd=\([^;]*\).*/\1/p')
+
+              echo "Extracted values:"
+              echo "  SERVER=$SERVER"
+              echo "  DB=$DB"
+              echo "  USER=$USER"
+              echo "  PASS length: ${#PASS}"
+
+              echo "Running SQLCMD..."
+              echo "SELECT @@VERSION;" | sqlcmd -S tcp:$SERVER -d $DB -U $USER -P $PASS -C
+            env:
+              AZURE_SQL_CONN: $(AZURE_SQL_CONN)
+            displayName: "Pre-check: Test SQL Connectivity"
+
+          # Run Phase2 translation with detailed logs
+          - script: |
+              set -e
+              python3 -m pip install azure-storage-blob requests pyodbc
+              echo "🚀 Starting Phase2 translation..."
+              python3 translation.py config.json 2>&1 | tee phase2.log
+              echo "✅ Phase2 completed. Full log saved to phase2.log"
+            displayName: "Run Phase2 (mBART + SQL TM)"
+
+  - stage: Phase3
+    displayName: "3️⃣ Integrate, Commit & Push"
+    dependsOn: Phase2
+    condition: succeeded()
+    jobs:
+      - job: Integrate
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+            persistCredentials: true
+
+          # Inject secrets again
+          - script: |
+              set -ex
+              sudo apt-get update && sudo apt-get install -y jq
+              jq '.blob_connection_string = env.AZURE_STORAGE_CONN |
+                  .sql_conn_str = env.AZURE_SQL_CONN |
+                  .hf_api_token = env.HUGGINGFACE_TOKEN |
+                  .vm_ip = env.VM_IP |
+                  .vm_port = env.VM_PORT' config.json > config.tmp.json
+              mv config.tmp.json config.json
+            env:
+              AZURE_STORAGE_CONN: $(AZURE_STORAGE_CONN)
+              AZURE_SQL_CONN: $(AZURE_SQL_CONN)
+              HUGGINGFACE_TOKEN: $(HUGGINGFACE_TOKEN)
+              VM_IP: $(VM_IP)
+              VM_PORT: $(VM_PORT)
+            displayName: "Inject secrets into config.json"
+
+          - script: |
+              set -e
+              python3 -m pip install azure-storage-blob
+              echo "🚀 Starting Phase3 integration..."
+              python3 phase3.py config.json 2>&1 | tee phase3.log
+              echo "✅ Phase3 completed. Full log saved to phase3.log"
+            displayName: "Run Phase3"
+
+          # Commit localized resx back to repo
+          - script: |
+              set -e
+              git config user.email "buildagent@yourorg.com"
+              git config user.name  "Azure Pipelines"
+              git add target-folder/
+              git commit -m "chore: add localized .resx files [skip ci]" || echo "No changes to commit"
+              git push origin HEAD:main
+            displayName: "🔄 Commit & Push localized .resx"
