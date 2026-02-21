@@ -10,6 +10,7 @@ import statistics
 import xml.etree.ElementTree as ET
 import uuid
 import torch
+os.environ["APPLICATIONINSIGHTS_ROLE_NAME"] = "Local-Inference-Engine" # ADD THIS LINE
 from transformers import MBartForConditionalGeneration, MBart50TokenizerFast
 from azure.storage.blob import BlobServiceClient
 from opencensus.ext.azure.log_exporter import AzureLogHandler
@@ -218,7 +219,7 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
     try:
         tree = ET.parse(local_path)
         root = tree.getroot()
-        file_units = root.findall('.//trans-unit')
+        file_units = root.findall('.//data')
         xml_parse_ms = profiler.stop_timer("xml_parse")
     except ET.ParseError as e: return {"total_api_time_ms": 0, "total_sql_time_ms": 0, "total_commit_time_ms": 0}, 0, 0, 0, 0
     
@@ -228,7 +229,7 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
     missing_units = [] 
     
     for i, unit in enumerate(file_units):
-        source_node = unit.find('source')
+        source_node = unit.find('value')
         source_text = source_node.text if source_node is not None else None
         if not source_text: continue
 
@@ -239,9 +240,9 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
         if cached_trans:
             profiler.add_segment_stats(tm_hit=True) 
             total_translated_chars += len(cached_trans) 
-            target = unit.find('target')
-            if target is None: target = ET.SubElement(unit, 'target')
-            target.text = cached_trans
+            value_node = target_unit.find('value')
+            if value_node is not None:
+             value_node.text = trans
             
             multiplier = LANG_TOKEN_MULTIPLIERS.get(target_lang, 0.5)
             output_tokens = len(cached_trans) / (4.0 * multiplier)
@@ -290,9 +291,9 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
                     
                     idx_in_file = current_batch_indices[b_idx]
                     target_unit = file_units[idx_in_file]
-                    target = target_unit.find('target')
-                    if target is None: target = ET.SubElement(target_unit, 'target')
-                    target.text = trans
+                    value_node = unit.find('value')
+                    if value_node is not None:
+                     value_node.text = cached_trans
                     
                     write_time = save_translation(cursor, current_batch_texts[b_idx], trans, target_lang, "mbart-large-local")
                     file_stats["total_sql_time_ms"] += write_time
@@ -367,7 +368,7 @@ def main(config_path):
     try:
         blobs = list(raw_container.list_blobs())
         for blob in blobs:
-            if blob.name.endswith('.xlf'):
+            if blob.name.endswith('.resx'):
                 profiler.reset_file_metrics() 
                 profiler.start_timer(f"file_{blob.name}")
                 logger.info(f"⬇️ Downloading {blob.name}...")
@@ -377,14 +378,20 @@ def main(config_path):
                     f.write(raw_container.download_blob(blob.name).readall())
                 download_ms = profiler.stop_timer("blob_download")
 
-                target_lang = blob.name.split('.')[-2]
-                file_stats, xml_parse_ms, xml_write_ms, total_source_chars, total_translated_chars = process_xlf_file(blob.name, target_lang, conn, exporter)
-                
-                logger.info(f"⬆️ Uploading processed {blob.name}...")
-                profiler.start_timer("blob_upload")
-                with open(blob.name, "rb") as data:
-                    trans_container.upload_blob(blob.name, data, overwrite=True)
-                upload_ms = profiler.stop_timer("blob_upload")
+                for target_lang in config.get('TargetLanguages', ['fr-FR']):
+                    logger.info(f"Translating {blob.name} to {target_lang}...")
+                    
+                    file_stats, xml_parse_ms, xml_write_ms, total_source_chars, total_translated_chars = process_xlf_file(blob.name, target_lang, conn, exporter)
+                    
+                    # Create a new name like resx_file_20_fr-FR.resx
+                    base_name = blob.name.replace('.resx', '')
+                    new_blob_name = f"{base_name}_{target_lang}.resx"
+
+                    logger.info(f"⬆️ Uploading processed {new_blob_name}...")
+                    profiler.start_timer("blob_upload")
+                    with open(blob.name, "rb") as data:
+                        trans_container.upload_blob(new_blob_name, data, overwrite=True)
+                    upload_ms = profiler.stop_timer("blob_upload")
                 
                 raw_container.delete_blob(blob.name)
                 if os.path.exists(blob.name): os.remove(blob.name)
