@@ -25,7 +25,7 @@ from opencensus.tags import tag_map as tag_map_module
 
 # --- 1. CONFIGURATION ---
 BATCH_SIZE = 5 
-TOKEN_LIMIT = 200
+TOKEN_LIMIT = 1024
 
 LANG_TOKEN_MULTIPLIERS = {
     "zh-CN": 1.2, "ja-JP": 1.1, "ru-RU": 0.5, "hi-IN": 0.3, 
@@ -197,12 +197,12 @@ def translate_local(texts, target_lang):
     profiler.start_timer("hf_network_latency") 
     try:
         tokenizer.src_lang = "en_XX"
-        encoded = tokenizer(texts, return_tensors="pt", padding=True, truncation=True).to(device)
+        encoded = tokenizer(texts, return_tensors="pt", padding=True, truncation=True,max_length=1024).to(device)
         
         generated_tokens = ai_model.generate(
             **encoded,
             forced_bos_token_id=tokenizer.lang_code_to_id.get(tgt_token, tokenizer.lang_code_to_id["en_XX"]),
-            max_length=200
+            max_length=512
         )
         translations = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
         latency = profiler.stop_timer("hf_network_latency")
