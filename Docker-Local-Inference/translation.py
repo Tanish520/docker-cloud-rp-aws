@@ -26,7 +26,6 @@ from opencensus.stats import view as view_module
 from opencensus.tags import tag_map as tag_map_module
 
 # --- 1. CONFIGURATION ---
-# AS REQUESTED: BATCH_SIZE kept at 64
 BATCH_SIZE = 64 
 TOKEN_LIMIT = 1024
 
@@ -264,7 +263,7 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
     try:
         tree = ET.parse(local_path)
         root = tree.getroot()
-        # XLIFF FIX: Search for 'trans-unit' tags instead of 'data'
+        # XLIFF FIX: Search for standard XLIFF 'trans-unit' tags
         file_units = root.findall('.//trans-unit')
         xml_parse_ms = profiler.stop_timer("xml_parse")
     except ET.ParseError as e: return {"total_api_time_ms": 0, "total_sql_time_ms": 0, "total_commit_time_ms": 0}, 0, 0, 0, 0
@@ -277,7 +276,7 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
     # 1. EXTRACT ALL SOURCE TEXTS FOR BULK CACHE CHECK
     all_source_texts = []
     for unit in file_units:
-        # XLIFF FIX: Source text resides in the <source> tag, not <value>
+        # XLIFF FIX: Source text resides in the <source> tag
         source_node = unit.find('source')
         if source_node is not None and source_node.text:
             all_source_texts.append(source_node.text)
@@ -288,7 +287,7 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
     
     # 3. PROCESS CACHE HITS LOCALLY O(1)
     for i, unit in enumerate(file_units):
-        # XLIFF FIX: Locate <source> for text extraction
+        # XLIFF FIX: Read text from the <source> tag
         source_node = unit.find('source')
         source_text = source_node.text if source_node is not None else None
         if not source_text: continue
@@ -301,7 +300,7 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
             profiler.add_segment_stats(tm_hit=True) 
             total_translated_chars += len(cached_trans) 
             
-            # XLIFF FIX: Write translated result to the <target> tag, not <value>
+            # XLIFF FIX: Write translated result to the <target> tag
             target_node = unit.find('target')
             if target_node is not None:
                 target_node.text = cached_trans
@@ -440,8 +439,13 @@ def main(config_path):
 
     try:
         blobs = list(raw_container.list_blobs())
+        
+        # ADDED LOGIC: Warn user if container is empty
+        if not blobs:
+            logger.warning(f"⚠️ No files found in the '{config['raw_container']}' container. Did Phase 1 upload them successfully?")
+            
         for blob in blobs:
-            # XLIFF FIX: Changed to explicitly target .xlf files created by Phase 1
+            # XLIFF FIX: Check strictly for .xlf extensions to align with phase1.py
             if blob.name.lower().endswith('.xlf'):
                 logger.info(f"⬇️ Downloading {blob.name}...")
                 
@@ -464,23 +468,27 @@ def main(config_path):
                     logger.error(f"❌ No target-language found in {local_safe_name}. Skipping.")
                     continue
 
-                # XLIFF FIX: Removed redundant TargetLanguages loop. We strictly process the XLIFF's assigned language.
+                # XLIFF FIX: Removed redundant TargetLanguages loop. We strictly process the one language assigned inside the XLIFF file.
                 try:
                     profiler.reset_file_metrics() 
                     profiler.start_timer(f"file_{local_safe_name}_{target_lang}")
                     
-                    logger.info(f"Translating {local_safe_name} to {target_lang}...")
+                    logger.info(f"Translating {local_safe_name} for target language {target_lang}...")
+                    
+                    temp_working_file = f"temp_{target_lang}_{local_safe_name}"
+                    shutil.copy(local_safe_name, temp_working_file)
 
-                    # Process the downloaded XLIFF locally
-                    file_stats, xml_parse_ms, xml_write_ms, total_source_chars, total_translated_chars = process_xlf_file(local_safe_name, target_lang, conn, exporter)
+                    file_stats, xml_parse_ms, xml_write_ms, total_source_chars, total_translated_chars = process_xlf_file(temp_working_file, target_lang, conn, exporter)
                     
                     # XLIFF FIX: Upload using original .xlf blob name back to translated container
                     logger.info(f"⬆️ Uploading processed {blob.name} to translated container...")
                     profiler.start_timer("blob_upload")
-                    with open(local_safe_name, "rb") as data:
+                    with open(temp_working_file, "rb") as data:
                         trans_container.upload_blob(blob.name, data, overwrite=True)
                     upload_ms = profiler.stop_timer("blob_upload")
                     
+                    if os.path.exists(temp_working_file): os.remove(temp_working_file)
+                
                     file_duration = profiler.stop_timer(f"file_{local_safe_name}_{target_lang}")
                     summary = profiler.get_summary_stats()
                     
@@ -549,6 +557,9 @@ def main(config_path):
                     }
                     logger.info(f"📊 RESEARCH_DATA: {json.dumps(metrics_payload)}")
                     time.sleep(1)
+
+                    # MEMORY CLEANUP
+                    gc.collect()
 
                 except Exception as loop_e:
                     logger.error(f"❌ Error processing {target_lang} for {blob.name}: {loop_e}")
