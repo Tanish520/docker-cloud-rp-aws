@@ -11,7 +11,7 @@ import xml.etree.ElementTree as ET
 import uuid
 import torch
 import shutil
-import gc
+import gc  # Added for memory management
 
 os.environ["APPLICATIONINSIGHTS_ROLE_NAME"] = "Local-Inference-Engine"
 
@@ -26,6 +26,7 @@ from opencensus.stats import view as view_module
 from opencensus.tags import tag_map as tag_map_module
 
 # --- 1. CONFIGURATION ---
+# AS REQUESTED: BATCH_SIZE kept at 64
 BATCH_SIZE = 64 
 TOKEN_LIMIT = 1024
 
@@ -263,7 +264,8 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
     try:
         tree = ET.parse(local_path)
         root = tree.getroot()
-        file_units = root.findall('.//data')
+        # XLIFF FIX: Search for 'trans-unit' tags instead of 'data'
+        file_units = root.findall('.//trans-unit')
         xml_parse_ms = profiler.stop_timer("xml_parse")
     except ET.ParseError as e: return {"total_api_time_ms": 0, "total_sql_time_ms": 0, "total_commit_time_ms": 0}, 0, 0, 0, 0
     
@@ -275,7 +277,8 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
     # 1. EXTRACT ALL SOURCE TEXTS FOR BULK CACHE CHECK
     all_source_texts = []
     for unit in file_units:
-        source_node = unit.find('value')
+        # XLIFF FIX: Source text resides in the <source> tag, not <value>
+        source_node = unit.find('source')
         if source_node is not None and source_node.text:
             all_source_texts.append(source_node.text)
 
@@ -285,7 +288,8 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
     
     # 3. PROCESS CACHE HITS LOCALLY O(1)
     for i, unit in enumerate(file_units):
-        source_node = unit.find('value')
+        # XLIFF FIX: Locate <source> for text extraction
+        source_node = unit.find('source')
         source_text = source_node.text if source_node is not None else None
         if not source_text: continue
 
@@ -297,9 +301,10 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
             profiler.add_segment_stats(tm_hit=True) 
             total_translated_chars += len(cached_trans) 
             
-            value_node = unit.find('value')
-            if value_node is not None:
-                value_node.text = cached_trans
+            # XLIFF FIX: Write translated result to the <target> tag, not <value>
+            target_node = unit.find('target')
+            if target_node is not None:
+                target_node.text = cached_trans
             
             multiplier = LANG_TOKEN_MULTIPLIERS.get(target_lang, 0.5)
             output_tokens = len(cached_trans) / (4.0 * multiplier)
@@ -350,9 +355,10 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
                     idx_in_file = current_batch_indices[b_idx]
                     target_unit = file_units[idx_in_file]
                     
-                    value_node = target_unit.find('value')
-                    if value_node is not None:
-                        value_node.text = trans
+                    # XLIFF FIX: Write translated result to the <target> tag
+                    target_node = target_unit.find('target')
+                    if target_node is not None:
+                        target_node.text = trans
                     
                     # Prepare tuple for bulk executemany
                     src = current_batch_texts[b_idx]
@@ -435,113 +441,121 @@ def main(config_path):
     try:
         blobs = list(raw_container.list_blobs())
         for blob in blobs:
-            if blob.name.endswith('.resx'):
+            # XLIFF FIX: Changed to explicitly target .xlf files created by Phase 1
+            if blob.name.lower().endswith('.xlf'):
                 logger.info(f"⬇️ Downloading {blob.name}...")
                 
                 profiler.start_timer("blob_download")
-                with open(blob.name, "wb") as f:
+                local_safe_name = os.path.basename(blob.name)
+                with open(local_safe_name, "wb") as f:
                     f.write(raw_container.download_blob(blob.name).readall())
                 download_ms = profiler.stop_timer("blob_download")
 
-                safe_blob_name = blob.name.replace('/', '_').replace('\\', '_')
-                base_name = blob.name.replace('.resx', '')
-
-                for target_lang in config.get('TargetLanguages', ['fr-FR']):
-                    try:
-                        profiler.reset_file_metrics() 
-                        profiler.start_timer(f"file_{blob.name}_{target_lang}")
-                        
-                        logger.info(f"Translating {blob.name} to {target_lang}...")
-                        
-                        temp_working_file = f"temp_{target_lang}_{safe_blob_name}"
-                        shutil.copy(blob.name, temp_working_file)
-
-                        file_stats, xml_parse_ms, xml_write_ms, total_source_chars, total_translated_chars = process_xlf_file(temp_working_file, target_lang, conn, exporter)
-                        
-                        new_blob_name = f"{base_name}_{target_lang}.resx"
-
-                        logger.info(f"⬆️ Uploading processed {new_blob_name}...")
-                        profiler.start_timer("blob_upload")
-                        with open(temp_working_file, "rb") as data:
-                            trans_container.upload_blob(new_blob_name, data, overwrite=True)
-                        upload_ms = profiler.stop_timer("blob_upload")
-                        
-                        if os.path.exists(temp_working_file): os.remove(temp_working_file)
+                # XLIFF FIX: Extract the specific language dynamically from the XLIFF file's <file target-language="XX"> tag
+                try:
+                    tree = ET.parse(local_safe_name)
+                    file_elem = tree.getroot().find('.//file')
+                    target_lang = file_elem.attrib.get('target-language') if file_elem is not None else None
+                except Exception as e:
+                    logger.error(f"❌ Error reading XLIFF target language from {local_safe_name}: {e}")
+                    continue
                     
-                        file_duration = profiler.stop_timer(f"file_{blob.name}_{target_lang}")
-                        summary = profiler.get_summary_stats()
-                        
-                        total_tokens = profiler.counters["tokens_processed"]
-                        hf_time = file_stats["total_api_time_ms"]
-                        ms_per_token = round(hf_time / max(1, total_tokens), 2) if total_tokens else 0.0
-                        avg_batch_size = round(total_tokens / max(1, profiler.counters["total_batches"]), 2)
-                        avg_segment_len = round(total_source_chars / max(1, summary["total_segments"]), 2)
-                        
-                        total_chars = total_source_chars + total_translated_chars
-                        char_token_ratio = round(total_chars / max(1, total_tokens), 2) if total_tokens else 0.0
-                        
-                        sleep_time_ms = profiler.counters.get("sleep_time_ms", 0.0)
-                        total_input_t = profiler.counters["total_input_tokens"]
-                        total_output_t = profiler.counters["total_output_tokens"]
-                        batches = max(1, profiler.counters["total_batches"])
-                        elapsed_s = max(1, file_duration / 1000)
-                        total_network_wait_ms = file_stats["total_sql_time_ms"] + file_stats["total_commit_time_ms"] + download_ms + upload_ms
-                        compute_time_ms = max(0, file_duration - total_network_wait_ms - sleep_time_ms)
-                        io_bound_ratio = round((total_network_wait_ms / max(1, file_duration)) * 100, 2)
-                        
-                        sys_stats = profiler.get_system_impact()
-                        
-                        metrics_payload = {
-                            "run_invocation_id": str(uuid.uuid4()), 
-                            "file_name": blob.name,
-                            "target_lang": target_lang,
-                            "throughput_seg_per_hr": summary['overall_throughput_seg_per_hr'],
-                            "throughput_input_tokens_per_hr": round((total_input_t / elapsed_s) * 3600, 2),
-                            "total_api_call_logically": profiler.counters["total_batches"], 
-                            "actual_api_call": profiler.counters["api_calls"],    
-                            "total_segments": summary["total_segments"],
-                            "avg_segment_char_length": avg_segment_len,
-                            "text_expansion_ratio": round(total_translated_chars / max(1, total_source_chars), 2),
-                            "tokens_processed_in_whole_language": total_tokens,
-                            "total_input_tokens_source": round(total_input_t, 2),
-                            "total_output_tokens_target": round(total_output_t, 2),
-                            "avg_input_tokens_per_batch": round(total_input_t / batches, 2),
-                            "avg_output_tokens_per_batch": round(total_output_t / batches, 2),
-                            "char_per_token_ratio": char_token_ratio,   
-                            "total_token_input_plus_output_per_batch": avg_batch_size,
-                            "time_per_token": ms_per_token,
-                            "nmt_calls": summary["total_nmt_calls"],
-                            "transational_memory_hits": summary["total_tm_hits"],
-                            "cache_rate": (profiler.counters["cache_hits"] / max(1, profiler.counters["cache_hits"] + profiler.counters["cache_misses"])) * 100,
-                            "total_time": file_duration,
-                            "cold_start_init_ms": cold_start_ms,
-                            "compute_time_ms": compute_time_ms,
-                            "total_sleep_time_ms": sleep_time_ms, 
-                            "network_wait_time_ms": total_network_wait_ms,
-                            "io_bound_pipeline_pct": io_bound_ratio,
-                            "hf_api_wait_ms": hf_time,
-                            "azure_sql_query_ms": file_stats["total_sql_time_ms"],
-                            "azure_sql_commit_ms": file_stats["total_commit_time_ms"],
-                            "xml_parse_ms": xml_parse_ms,
-                            "xml_disk_write_ms": xml_write_ms,
-                            "blob_download_ms": download_ms, 
-                            "blob_upload_ms": upload_ms,
-                            "telemetry_overhead_ms": profiler.counters["telemetry_overhead_ms"],
-                            "cpu_usage_pct": sys_stats['cpu_percent'],
-                            "memory_mb": sys_stats['memory_mb'],
-                            "serverless_cost_gb_sec": round((sys_stats['memory_mb'] / 1024) * (file_duration / 1000), 4),
-                            "api_retries": profiler.counters["api_retries"],
-                            "api_failures": profiler.counters["api_failures"],
-                            "api_throttled_429": profiler.counters.get("api_throttled", 0)
-                        }
-                        logger.info(f"📊 RESEARCH_DATA: {json.dumps(metrics_payload)}")
-                        time.sleep(1)
+                if not target_lang:
+                    logger.error(f"❌ No target-language found in {local_safe_name}. Skipping.")
+                    continue
 
-                    except Exception as loop_e:
-                        logger.error(f"❌ Error processing {target_lang}: {loop_e}")
-                
+                # XLIFF FIX: Removed redundant TargetLanguages loop. We strictly process the XLIFF's assigned language.
+                try:
+                    profiler.reset_file_metrics() 
+                    profiler.start_timer(f"file_{local_safe_name}_{target_lang}")
+                    
+                    logger.info(f"Translating {local_safe_name} to {target_lang}...")
+
+                    # Process the downloaded XLIFF locally
+                    file_stats, xml_parse_ms, xml_write_ms, total_source_chars, total_translated_chars = process_xlf_file(local_safe_name, target_lang, conn, exporter)
+                    
+                    # XLIFF FIX: Upload using original .xlf blob name back to translated container
+                    logger.info(f"⬆️ Uploading processed {blob.name} to translated container...")
+                    profiler.start_timer("blob_upload")
+                    with open(local_safe_name, "rb") as data:
+                        trans_container.upload_blob(blob.name, data, overwrite=True)
+                    upload_ms = profiler.stop_timer("blob_upload")
+                    
+                    file_duration = profiler.stop_timer(f"file_{local_safe_name}_{target_lang}")
+                    summary = profiler.get_summary_stats()
+                    
+                    total_tokens = profiler.counters["tokens_processed"]
+                    hf_time = file_stats["total_api_time_ms"]
+                    ms_per_token = round(hf_time / max(1, total_tokens), 2) if total_tokens else 0.0
+                    avg_batch_size = round(total_tokens / max(1, profiler.counters["total_batches"]), 2) if profiler.counters["total_batches"] else 0.0
+                    avg_segment_len = round(total_source_chars / max(1, summary["total_segments"]), 2)
+                    
+                    total_chars = total_source_chars + total_translated_chars
+                    char_token_ratio = round(total_chars / max(1, total_tokens), 2) if total_tokens else 0.0
+                    
+                    sleep_time_ms = profiler.counters.get("sleep_time_ms", 0.0)
+                    total_input_t = profiler.counters["total_input_tokens"]
+                    total_output_t = profiler.counters["total_output_tokens"]
+                    batches = max(1, profiler.counters["total_batches"])
+                    elapsed_s = max(1, file_duration / 1000)
+                    total_network_wait_ms = file_stats["total_sql_time_ms"] + file_stats["total_commit_time_ms"] + download_ms + upload_ms
+                    compute_time_ms = max(0, file_duration - total_network_wait_ms - sleep_time_ms)
+                    io_bound_ratio = round((total_network_wait_ms / max(1, file_duration)) * 100, 2)
+                    
+                    sys_stats = profiler.get_system_impact()
+                    
+                    metrics_payload = {
+                        "run_invocation_id": str(uuid.uuid4()), 
+                        "file_name": blob.name,
+                        "target_lang": target_lang,
+                        "throughput_seg_per_hr": summary['overall_throughput_seg_per_hr'],
+                        "throughput_input_tokens_per_hr": round((total_input_t / elapsed_s) * 3600, 2),
+                        "total_api_call_logically": profiler.counters["total_batches"], 
+                        "actual_api_call": profiler.counters["api_calls"],    
+                        "total_segments": summary["total_segments"],
+                        "avg_segment_char_length": avg_segment_len,
+                        "text_expansion_ratio": round(total_translated_chars / max(1, total_source_chars), 2),
+                        "tokens_processed_in_whole_language": total_tokens,
+                        "total_input_tokens_source": round(total_input_t, 2),
+                        "total_output_tokens_target": round(total_output_t, 2),
+                        "avg_input_tokens_per_batch": round(total_input_t / batches, 2),
+                        "avg_output_tokens_per_batch": round(total_output_t / batches, 2),
+                        "char_per_token_ratio": char_token_ratio,   
+                        "total_token_input_plus_output_per_batch": avg_batch_size,
+                        "time_per_token": ms_per_token,
+                        "nmt_calls": summary["total_nmt_calls"],
+                        "transational_memory_hits": summary["total_tm_hits"],
+                        "cache_rate": (profiler.counters["cache_hits"] / max(1, profiler.counters["cache_hits"] + profiler.counters["cache_misses"])) * 100,
+                        "total_time": file_duration,
+                        "cold_start_init_ms": cold_start_ms,
+                        "compute_time_ms": compute_time_ms,
+                        "total_sleep_time_ms": sleep_time_ms, 
+                        "network_wait_time_ms": total_network_wait_ms,
+                        "io_bound_pipeline_pct": io_bound_ratio,
+                        "hf_api_wait_ms": hf_time,
+                        "azure_sql_query_ms": file_stats["total_sql_time_ms"],
+                        "azure_sql_commit_ms": file_stats["total_commit_time_ms"],
+                        "xml_parse_ms": xml_parse_ms,
+                        "xml_disk_write_ms": xml_write_ms,
+                        "blob_download_ms": download_ms, 
+                        "blob_upload_ms": upload_ms,
+                        "telemetry_overhead_ms": profiler.counters["telemetry_overhead_ms"],
+                        "cpu_usage_pct": sys_stats['cpu_percent'],
+                        "memory_mb": sys_stats['memory_mb'],
+                        "serverless_cost_gb_sec": round((sys_stats['memory_mb'] / 1024) * (file_duration / 1000), 4),
+                        "api_retries": profiler.counters["api_retries"],
+                        "api_failures": profiler.counters["api_failures"],
+                        "api_throttled_429": profiler.counters.get("api_throttled", 0)
+                    }
+                    logger.info(f"📊 RESEARCH_DATA: {json.dumps(metrics_payload)}")
+                    time.sleep(1)
+
+                except Exception as loop_e:
+                    logger.error(f"❌ Error processing {target_lang} for {blob.name}: {loop_e}")
+            
+                # Cleanup Blob and Source local file
                 raw_container.delete_blob(blob.name)
-                if os.path.exists(blob.name): os.remove(blob.name)
+                if os.path.exists(local_safe_name): os.remove(local_safe_name)
                 
     except Exception as e:
         logger.error(f"❌ Pipeline Failure: {e}")
