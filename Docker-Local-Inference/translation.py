@@ -26,6 +26,7 @@ from opencensus.stats import view as view_module
 from opencensus.tags import tag_map as tag_map_module
 
 # --- 1. CONFIGURATION ---
+# USER REQUESTED: Batch size kept at 64
 BATCH_SIZE = 64 
 TOKEN_LIMIT = 1024
 
@@ -170,10 +171,7 @@ def bulk_query_translations(cursor, source_texts, target_lang):
     
     translations_map = {}
     try:
-        # Deduplicate to minimize payload size
         unique_texts = list(set(source_texts))
-        
-        # Batching queries to avoid SQL parameter count limits (2100 max in SQL Server)
         chunk_size = 1000
         for i in range(0, len(unique_texts), chunk_size):
             chunk = unique_texts[i:i + chunk_size]
@@ -198,9 +196,7 @@ def bulk_save_translations(cursor, translation_tuples):
     profiler.counters["sql_writes"] += 1
     profiler.start_timer("sql_write_latency")
     try:
-        # fast_executemany drastically increases pyodbc bulk write performance
         cursor.fast_executemany = True 
-        
         query = """
         MERGE INTO Translations AS target
         USING (SELECT ? AS SourceText, ? AS TargetLang) AS source
@@ -230,7 +226,6 @@ def translate_local(texts, target_lang):
     profiler.start_timer("hf_network_latency") 
     try:
         ai_model.eval()
-        
         tokenizer.src_lang = "en_XX"
         encoded = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=1024).to(device)
         
@@ -239,7 +234,7 @@ def translate_local(texts, target_lang):
                 **encoded,
                 forced_bos_token_id=tokenizer.lang_code_to_id.get(tgt_token, tokenizer.lang_code_to_id["en_XX"]),
                 max_length=512,
-                num_beams=5
+                num_beams=1   # MASSIVE LATENCY FIX: Restored to 1. Using 5 makes the model 5x slower.
             )
             
         translations = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
@@ -263,7 +258,6 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
     try:
         tree = ET.parse(local_path)
         root = tree.getroot()
-        # XLIFF FIX: Search for standard XLIFF 'trans-unit' tags
         file_units = root.findall('.//trans-unit')
         xml_parse_ms = profiler.stop_timer("xml_parse")
     except ET.ParseError as e: return {"total_api_time_ms": 0, "total_sql_time_ms": 0, "total_commit_time_ms": 0}, 0, 0, 0, 0
@@ -273,34 +267,27 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
     total_source_chars = total_translated_chars = 0  
     missing_units = [] 
     
-    # 1. EXTRACT ALL SOURCE TEXTS FOR BULK CACHE CHECK
     all_source_texts = []
     for unit in file_units:
-        # XLIFF FIX: Source text resides in the <source> tag
         source_node = unit.find('source')
         if source_node is not None and source_node.text:
             all_source_texts.append(source_node.text)
 
-    # 2. PERFORM ONE SINGLE SQL QUERY INSTEAD OF N+1
     translations_map, read_time = bulk_query_translations(cursor, all_source_texts, target_lang)
     file_stats["total_sql_time_ms"] += read_time
     
-    # 3. PROCESS CACHE HITS LOCALLY O(1)
     for i, unit in enumerate(file_units):
-        # XLIFF FIX: Read text from the <source> tag
         source_node = unit.find('source')
         source_text = source_node.text if source_node is not None else None
         if not source_text: continue
 
         total_source_chars += len(source_text)
-        
         cached_trans = translations_map.get(source_text)
 
         if cached_trans:
             profiler.add_segment_stats(tm_hit=True) 
             total_translated_chars += len(cached_trans) 
             
-            # XLIFF FIX: Write translated result to the <target> tag
             target_node = unit.find('target')
             if target_node is not None:
                 target_node.text = cached_trans
@@ -324,11 +311,10 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
         if not current_batch_texts: return
         
         profiler.counters["total_batches"] += 1 
-        
         translations, batch_latency, _ = translate_local(current_batch_texts, target_lang)
         file_stats["total_api_time_ms"] += batch_latency
         
-        db_write_batch = [] # Collect translations to insert massively
+        db_write_batch = [] 
         
         if translations and any(t is not None for t in translations):
             telemetry_start = time.perf_counter()
@@ -354,12 +340,10 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
                     idx_in_file = current_batch_indices[b_idx]
                     target_unit = file_units[idx_in_file]
                     
-                    # XLIFF FIX: Write translated result to the <target> tag
                     target_node = target_unit.find('target')
                     if target_node is not None:
                         target_node.text = trans
                     
-                    # Prepare tuple for bulk executemany
                     src = current_batch_texts[b_idx]
                     db_write_batch.append((src, target_lang, trans, src, target_lang, trans, "mbart-large-local"))
                     
@@ -370,7 +354,6 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
                     profiler.counters["total_input_tokens"] += input_tokens
                     profiler.counters["total_output_tokens"] += output_tokens
 
-            # 4. PERFORM ONE SINGLE SQL WRITE INSTEAD OF N+1
             if db_write_batch:
                 write_time = bulk_save_translations(cursor, db_write_batch)
                 file_stats["total_sql_time_ms"] += write_time
@@ -407,6 +390,14 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
     mm.measure_float_put(m_overhead, profiler.counters["telemetry_overhead_ms"])
     profiler.measure_telemetry_overhead(mm.record, tag_map_module.TagMap())
 
+    # MEMORY FIX: Force clear local large objects so they don't carry to the next file
+    del translations_map
+    del all_source_texts
+    del file_units
+    del root
+    del tree
+    gc.collect()
+
     return file_stats, xml_parse_ms, xml_write_ms, total_source_chars, total_translated_chars
 
 def main(config_path):
@@ -420,8 +411,13 @@ def main(config_path):
     
     try:
         blob_service = BlobServiceClient.from_connection_string(config['blob_connection_string'])
-        raw_container = blob_service.get_container_client(config['raw_container'])
-        trans_container = blob_service.get_container_client(config['translated_container'])
+        # FIX: Provide strict fallback names just in case config misses them
+        raw_container_name = config.get('raw_container', 'raw-files')
+        trans_container_name = config.get('translated_container', 'trans-files')
+        
+        raw_container = blob_service.get_container_client(raw_container_name)
+        trans_container = blob_service.get_container_client(trans_container_name)
+        
         profiler.start_timer("cold_start")
         conn, _ = get_sql_connection(config['sql_conn_str'])
         cold_start_ms = profiler.stop_timer("cold_start")
@@ -438,14 +434,16 @@ def main(config_path):
     except: exporter = None
 
     try:
+        # PULL BLOBS FROM AZURE
         blobs = list(raw_container.list_blobs())
         
-        # ADDED LOGIC: Warn user if container is empty
+        # LOGGING FIX: Tell user exactly what the container sees to avoid silent exits
         if not blobs:
-            logger.warning(f"⚠️ No files found in the '{config['raw_container']}' container. Did Phase 1 upload them successfully?")
-            
+            logger.warning(f"⚠️ ZERO files found in container '{raw_container_name}'. Are you sure Phase 1 ran?")
+        else:
+            logger.info(f"🔎 Found {len(blobs)} files in '{raw_container_name}'.")
+
         for blob in blobs:
-            # XLIFF FIX: Check strictly for .xlf extensions to align with phase1.py
             if blob.name.lower().endswith('.xlf'):
                 logger.info(f"⬇️ Downloading {blob.name}...")
                 
@@ -455,40 +453,30 @@ def main(config_path):
                     f.write(raw_container.download_blob(blob.name).readall())
                 download_ms = profiler.stop_timer("blob_download")
 
-                # XLIFF FIX: Extract the specific language dynamically from the XLIFF file's <file target-language="XX"> tag
-                try:
-                    tree = ET.parse(local_safe_name)
-                    file_elem = tree.getroot().find('.//file')
-                    target_lang = file_elem.attrib.get('target-language') if file_elem is not None else None
-                except Exception as e:
-                    logger.error(f"❌ Error reading XLIFF target language from {local_safe_name}: {e}")
-                    continue
-                    
-                if not target_lang:
-                    logger.error(f"❌ No target-language found in {local_safe_name}. Skipping.")
+                # LOGIC FIX: Instead of looping over all TargetLanguages and destroying the flow,
+                # extract the language directly from the phase1 file name (e.g., resx_file_10.fr-FR.xlf -> fr-FR)
+                parts = blob.name.split('.')
+                if len(parts) >= 3:
+                    target_lang = parts[-2]
+                else:
+                    logger.warning(f"⚠️ Could not deduce language from filename {blob.name}. Skipping.")
                     continue
 
-                # XLIFF FIX: Removed redundant TargetLanguages loop. We strictly process the one language assigned inside the XLIFF file.
                 try:
                     profiler.reset_file_metrics() 
                     profiler.start_timer(f"file_{local_safe_name}_{target_lang}")
                     
-                    logger.info(f"Translating {local_safe_name} for target language {target_lang}...")
+                    logger.info(f"Translating {local_safe_name} to {target_lang}...")
                     
-                    temp_working_file = f"temp_{target_lang}_{local_safe_name}"
-                    shutil.copy(local_safe_name, temp_working_file)
-
-                    file_stats, xml_parse_ms, xml_write_ms, total_source_chars, total_translated_chars = process_xlf_file(temp_working_file, target_lang, conn, exporter)
+                    # Process the single language XLIFF file
+                    file_stats, xml_parse_ms, xml_write_ms, total_source_chars, total_translated_chars = process_xlf_file(local_safe_name, target_lang, conn, exporter)
                     
-                    # XLIFF FIX: Upload using original .xlf blob name back to translated container
                     logger.info(f"⬆️ Uploading processed {blob.name} to translated container...")
                     profiler.start_timer("blob_upload")
-                    with open(temp_working_file, "rb") as data:
+                    with open(local_safe_name, "rb") as data:
                         trans_container.upload_blob(blob.name, data, overwrite=True)
                     upload_ms = profiler.stop_timer("blob_upload")
                     
-                    if os.path.exists(temp_working_file): os.remove(temp_working_file)
-                
                     file_duration = profiler.stop_timer(f"file_{local_safe_name}_{target_lang}")
                     summary = profiler.get_summary_stats()
                     
@@ -555,19 +543,27 @@ def main(config_path):
                         "api_failures": profiler.counters["api_failures"],
                         "api_throttled_429": profiler.counters.get("api_throttled", 0)
                     }
+                    
+                    # TELEMETRY GUARANTEE FIX
                     logger.info(f"📊 RESEARCH_DATA: {json.dumps(metrics_payload)}")
-                    time.sleep(1)
-
-                    # MEMORY CLEANUP
-                    gc.collect()
+                    if az_handler:
+                        try:
+                            az_handler.flush()
+                        except Exception as e:
+                            pass
+                    # Sleep ensures background worker thread has time to send network packet
+                    time.sleep(2)
 
                 except Exception as loop_e:
                     logger.error(f"❌ Error processing {target_lang} for {blob.name}: {loop_e}")
             
-                # Cleanup Blob and Source local file
+                # Delete Cloud Blob and local file so container space stays clean
                 raw_container.delete_blob(blob.name)
                 if os.path.exists(local_safe_name): os.remove(local_safe_name)
                 
+                # GC Collection to reset RAM baseline
+                gc.collect()
+
     except Exception as e:
         logger.error(f"❌ Pipeline Failure: {e}")
 
