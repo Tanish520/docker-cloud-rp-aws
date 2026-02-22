@@ -21,6 +21,7 @@ stages:
               AZURE_STORAGE_CONN: $(AZURE_STORAGE_CONN)
               AZURE_SQL_CONN: $(AZURE_SQL_CONN)
               HUGGINGFACE_TOKEN: $(HUGGINGFACE_TOKEN)
+              GITHUB_PAT: $(GITHUB_PAT)
             displayName: "Inject secrets into config.json"
 
           - script: |
@@ -55,6 +56,7 @@ stages:
               AZURE_STORAGE_CONN: $(AZURE_STORAGE_CONN)
               AZURE_SQL_CONN: $(AZURE_SQL_CONN)
               APPINSIGHTS_CONNECTION_STRING: $(APPINSIGHTS_CONNECTION_STRING)
+              GITHUB_PAT: $(GITHUB_PAT)
             workingDirectory: 'Docker-Local-Inference' 
             displayName: "Inject secrets into config.json"
 
@@ -103,6 +105,7 @@ stages:
               AZURE_STORAGE_CONN: $(AZURE_STORAGE_CONN)
               AZURE_SQL_CONN: $(AZURE_SQL_CONN)
               HUGGINGFACE_TOKEN: $(HUGGINGFACE_TOKEN)
+              GITHUB_PAT: $(GITHUB_PAT)
             workingDirectory: 'API_based_HFace_AppInsight' # <-- ADD THIS
             displayName: "Inject secrets into config.json"
 
