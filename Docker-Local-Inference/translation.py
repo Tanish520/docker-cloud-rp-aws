@@ -27,7 +27,7 @@ from opencensus.tags import tag_map as tag_map_module
 
 # --- 1. CONFIGURATION ---
 # USER REQUESTED: Batch size kept at 64
-BATCH_SIZE = 64 
+BATCH_SIZE = 52
 TOKEN_LIMIT = 1024
 
 LANG_TOKEN_MULTIPLIERS = {
@@ -234,7 +234,7 @@ def translate_local(texts, target_lang):
                 **encoded,
                 forced_bos_token_id=tokenizer.lang_code_to_id.get(tgt_token, tokenizer.lang_code_to_id["en_XX"]),
                 max_length=512,
-                num_beams=1  
+                num_beams=5 
             )
             
         translations = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
