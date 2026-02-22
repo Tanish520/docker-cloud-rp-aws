@@ -74,6 +74,10 @@ stages:
               echo "🚀 Model not found in cache. Downloading and converting NLLB-200..."
               pip install ctranslate2 transformers torch sentencepiece
               ct2-transformers-converter --model facebook/nllb-200-distilled-600M --output_dir nllb_ct2 --quantization int8
+              # 🧹 CRITICAL CLEANUP: Free up 5GB of disk space so the agent doesn't crash!
+              echo "🧹 Cleaning up heavy raw model and PyTorch..."
+              pip uninstall -y torch
+              rm -rf ~/.cache/huggingface
               echo "✅ Conversion complete."
             workingDirectory: 'Docker-Local-Inference'
             condition: ne(variables.MODEL_CACHE_RESTORED, 'true')
