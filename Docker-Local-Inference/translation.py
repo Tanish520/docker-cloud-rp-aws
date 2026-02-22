@@ -44,7 +44,8 @@ CT2_MODEL_PATH = "nllb_ct2"
 HF_MODEL_NAME = "facebook/nllb-200-distilled-600M"
 
 try:
-    tokenizer = AutoTokenizer.from_pretrained(CT2_MODEL_PATH)
+    # 1. Load the lightweight tokenizer rules from Hugging Face (~5MB)
+    tokenizer = AutoTokenizer.from_pretrained(HF_MODEL_NAME)
     # Load C++ engine natively. We use "auto" device to detect CPU/GPU and int8 for max speed/lowest memory.
     translator = ctranslate2.Translator(CT2_MODEL_PATH, device="auto", compute_type="int8")
     print("✅ Model loaded successfully into CTranslate2 C++ Backend.")
@@ -233,14 +234,17 @@ def translate_local(texts, target_lang):
     try:
         tokenizer.src_lang = "eng_Latn"
         
-        # 1. Tokenize inputs to pure string arrays (Fast CPU op)
-        source_tokens = [tokenizer.convert_ids_to_tokens(tokenizer.encode(text)) for text in texts]
+        # 1. Tokenize inputs with TRUNCATION SAFETY to prevent C++ engine crashes
+        source_tokens = []
+        for text in texts:
+            encoded_ids = tokenizer.encode(text, truncation=True, max_length=TOKEN_LIMIT)
+            source_tokens.append(tokenizer.convert_ids_to_tokens(encoded_ids))
         
         # 2. Pure C++ Engine Inference
         results = translator.translate_batch(
             source_tokens,
             target_prefix=[[tgt_token]] * len(texts),
-            beam_size=5, # Optimally fast while maintaining quality. Change to 1 for absolute max speed.
+            beam_size=5, # Optimally fast while maintaining quality
             batch_type="tokens", # Dynamic padding removal
             max_batch_size=1024
         )
@@ -250,7 +254,11 @@ def translate_local(texts, target_lang):
         for result in results:
             # Drop the language token prefix from the beginning
             target_tokens = result.hypotheses[0][1:]
-            translations.append(tokenizer.decode(tokenizer.convert_tokens_to_ids(target_tokens)))
+            
+            # CRITICAL FIX: Skip special tokens so </s> doesn't leak into the translation
+            token_ids = tokenizer.convert_tokens_to_ids(target_tokens)
+            clean_text = tokenizer.decode(token_ids, skip_special_tokens=True)
+            translations.append(clean_text)
 
         latency = profiler.stop_timer("hf_network_latency")
 
