@@ -23,8 +23,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # --- INJECT CACHED MODEL ---
 # The Azure Pipeline already downloaded and converted the model.
-# We just copy the optimized folder directly into the image.
-COPY nllb_ct2 /app/nllb_ct2
 
 # Copy the actual code (translation.py, config.json, etc.)
 COPY . .

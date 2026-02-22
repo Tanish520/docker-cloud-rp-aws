@@ -44,7 +44,7 @@ CT2_MODEL_PATH = "nllb_ct2"
 HF_MODEL_NAME = "facebook/nllb-200-distilled-600M"
 
 try:
-    tokenizer = AutoTokenizer.from_pretrained(HF_MODEL_NAME)
+    tokenizer = AutoTokenizer.from_pretrained(CT2_MODEL_PATH)
     # Load C++ engine natively. We use "auto" device to detect CPU/GPU and int8 for max speed/lowest memory.
     translator = ctranslate2.Translator(CT2_MODEL_PATH, device="auto", compute_type="int8")
     print("✅ Model loaded successfully into CTranslate2 C++ Backend.")

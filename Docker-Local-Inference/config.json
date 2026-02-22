@@ -15,7 +15,7 @@
   "raw_container": "raw-files",
   "translated_container": "trans-files",
   "hf_models": {
-    "default": "facebook/mbart-large-50-many-to-many-mmt"
+    "default": "facebook/nllb-200-distilled-600M"
   },
   "hf_api_token": "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",
   "TargetResxPath": "target-folder"
