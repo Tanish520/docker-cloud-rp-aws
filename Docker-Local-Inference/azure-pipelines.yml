@@ -30,11 +30,11 @@ stages:
               echo "🚀 Starting Phase1 extraction..."
               python3 phase1.py config.json 2>&1 | tee phase1.log
               echo "✅ Phase1 completed. Full log saved to phase1.log"
-            workingDirectory: 'API_based_HFace_AppInsight' # <-- ADD THIS
+            workingDirectory: 'API_based_HFace_AppInsight'
             displayName: "Run Phase1"
 
   - stage: Phase2
-    displayName: "2️⃣ Translate (Docker + Local mBART)"
+    displayName: "2️⃣ Translate (Docker + Local NLLB-CT2)"
     dependsOn: Phase1
     condition: succeeded()
     jobs:
@@ -60,10 +60,29 @@ stages:
             workingDirectory: 'Docker-Local-Inference' 
             displayName: "Inject secrets into config.json"
 
+          # 📦 NEW: Check Azure Pipeline Cache for the Optimized Model
+          - task: Cache@2
+            inputs:
+              key: 'nllb-ct2-model-v1 | "$(Agent.OS)"'
+              path: '$(System.DefaultWorkingDirectory)/Docker-Local-Inference/nllb_ct2'
+              cacheHitVar: MODEL_CACHE_RESTORED
+            displayName: "📦 Restore CTranslate2 Model from Cache"
+
+          # ⚙️ NEW: Download & Convert (Runs ONLY if the cache was missed)
+          - script: |
+              set -e
+              echo "🚀 Model not found in cache. Downloading and converting NLLB-200..."
+              pip install ctranslate2 transformers torch sentencepiece
+              ct2-transformers-converter --model facebook/nllb-200-distilled-600M --output_dir nllb_ct2 --quantization int8
+              echo "✅ Conversion complete."
+            workingDirectory: 'Docker-Local-Inference'
+            condition: ne(variables.MODEL_CACHE_RESTORED, 'true')
+            displayName: "⚙️ Download & Convert NLLB (If Cache Miss)"
+
           # Build the Docker Image
           - script: |
               set -e
-              echo "🚀 Building Docker Image (Downloading mBART-50)..."
+              echo "🚀 Building Docker Image (Using Cached NLLB)..."
               docker build -t local-ai-translator .
             workingDirectory: 'Docker-Local-Inference' 
             displayName: "Build Docker Image"
@@ -72,7 +91,6 @@ stages:
           - script: |
               set -e
               echo "🚀 Running Translation inside Docker..."
-              # -v mounts the current folder so the container can read config.json
               docker run -v $(pwd):/app local-ai-translator python translation.py config.json 2>&1 | tee phase2.log
               echo "✅ Phase2 completed. Full log saved to phase2.log"
               
@@ -106,7 +124,7 @@ stages:
               AZURE_SQL_CONN: $(AZURE_SQL_CONN)
               HUGGINGFACE_TOKEN: $(HUGGINGFACE_TOKEN)
               GITHUB_PAT: $(GITHUB_PAT)
-            workingDirectory: 'API_based_HFace_AppInsight' # <-- ADD THIS
+            workingDirectory: 'API_based_HFace_AppInsight'
             displayName: "Inject secrets into config.json"
 
           - script: |
@@ -115,7 +133,7 @@ stages:
               echo "🚀 Starting Phase3 integration..."
               python3 phase3.py config.json 2>&1 | tee phase3.log
               echo "✅ Phase3 completed. Full log saved to phase3.log"
-            workingDirectory: 'API_based_HFace_AppInsight' # <-- ADD THIS
+            workingDirectory: 'API_based_HFace_AppInsight'
             displayName: "Run Phase3"
 
           # Commit localized resx back to repo
@@ -124,5 +142,5 @@ stages:
               git config user.email "buildagent@yourorg.com"
               git config user.name  "Azure Pipelines"
               
-            workingDirectory: 'API_based_HFace_AppInsight' # <-- ADD THIS
+            workingDirectory: 'API_based_HFace_AppInsight'
             displayName: "🔄 Commit & Push localized .resx"

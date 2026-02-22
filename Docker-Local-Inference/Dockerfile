@@ -17,18 +17,16 @@ RUN curl https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /u
     && apt-get update \
     && ACCEPT_EULA=Y apt-get install -y msodbcsql18
 
-# Install Python packages
+# Copy requirements and install standard pipeline packages
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# --- PRE-CACHE THE AI MODEL (Strict Latency Optimization) ---
-# This ensures the 2.5GB model is inside the image and never downloaded at runtime
-RUN python -c "from transformers import MBartForConditionalGeneration, MBart50TokenizerFast; \
-    model_name = 'facebook/mbart-large-50-many-to-many-mmt'; \
-    MBart50TokenizerFast.from_pretrained(model_name); \
-    MBartForConditionalGeneration.from_pretrained(model_name)"
+# --- INJECT CACHED MODEL ---
+# The Azure Pipeline already downloaded and converted the model.
+# We just copy the optimized folder directly into the image.
+COPY nllb_ct2 /app/nllb_ct2
 
-# Copy the actual code
+# Copy the actual code (translation.py, config.json, etc.)
 COPY . .
 
 # Run the script when the container starts

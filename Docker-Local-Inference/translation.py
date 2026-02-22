@@ -9,13 +9,14 @@ import threading
 import statistics
 import xml.etree.ElementTree as ET
 import uuid
-import torch
 import shutil
-import gc  # Added for memory management
+import gc  # Used to clear Python-side objects
 
 os.environ["APPLICATIONINSIGHTS_ROLE_NAME"] = "Local-Inference-Engine"
 
-from transformers import MBartForConditionalGeneration, MBart50TokenizerFast
+# IMPORT CTRANSLATE2 AND AUTOTOKENIZER INSTEAD OF MBART/PYTORCH
+import ctranslate2
+from transformers import AutoTokenizer
 from azure.storage.blob import BlobServiceClient
 from opencensus.ext.azure.log_exporter import AzureLogHandler
 from opencensus.ext.azure import metrics_exporter
@@ -26,7 +27,6 @@ from opencensus.stats import view as view_module
 from opencensus.tags import tag_map as tag_map_module
 
 # --- 1. CONFIGURATION ---
-# USER REQUESTED: Batch size kept at 64
 BATCH_SIZE = 52
 TOKEN_LIMIT = 1024
 
@@ -36,17 +36,22 @@ LANG_TOKEN_MULTIPLIERS = {
     "ta-IN": 0.2, "mr-IN": 0.3, "bn-IN": 0.3, "kn-IN": 0.2
 }
 
-# --- PRE-LOAD LOCAL AI MODEL ---
-print("🧠 Loading local mBART-50 Model into RAM...")
-model_name = "facebook/mbart-large-50-many-to-many-mmt"
-tokenizer = MBart50TokenizerFast.from_pretrained(model_name)
-ai_model = MBartForConditionalGeneration.from_pretrained(model_name)
-device = "cuda" if torch.cuda.is_available() else "cpu"
-ai_model.to(device)
+# --- PRE-LOAD LOCAL CTRANSLATE2 ENGINE ---
+print("🧠 Loading optimized CTranslate2 NLLB Model into RAM...")
 
-# Performance tuning for CPU/GPU inference
-ai_model.eval() 
-print(f"✅ Model loaded successfully on {device.upper()}")
+# This assumes you ran 'ct2-transformers-converter' and created this folder
+CT2_MODEL_PATH = "nllb_ct2" 
+HF_MODEL_NAME = "facebook/nllb-200-distilled-600M"
+
+try:
+    tokenizer = AutoTokenizer.from_pretrained(HF_MODEL_NAME)
+    # Load C++ engine natively. We use "auto" device to detect CPU/GPU and int8 for max speed/lowest memory.
+    translator = ctranslate2.Translator(CT2_MODEL_PATH, device="auto", compute_type="int8")
+    print("✅ Model loaded successfully into CTranslate2 C++ Backend.")
+except Exception as e:
+    print(f"❌ Failed to load CTranslate2 model. Did you run ct2-transformers-converter? Error: {e}")
+    sys.exit(1)
+
 
 # --- 2. GLOBAL METRICS DEFINITION ---
 m_latency = measure_module.MeasureFloat("hf_latency", "Latency of HF API", "ms")
@@ -162,7 +167,6 @@ def get_sql_connection(conn_str):
         print(f"❌ SQL Connection Error: {e}")
         return None, 0
 
-# --- N+1 FIX: BULK DATABASE READ ---
 def bulk_query_translations(cursor, source_texts, target_lang):
     if not source_texts: return {}, 0
     
@@ -189,7 +193,6 @@ def bulk_query_translations(cursor, source_texts, target_lang):
         print(f"❌ SQL Bulk Query Error: {e}")
         return {}, profiler.stop_timer("sql_read_latency")
 
-# --- N+1 FIX: BULK DATABASE WRITE ---
 def bulk_save_translations(cursor, translation_tuples):
     if not translation_tuples: return 0
     
@@ -211,40 +214,45 @@ def bulk_save_translations(cursor, translation_tuples):
         print(f"❌ SQL Bulk Write Error: {e}")
         return profiler.stop_timer("sql_write_latency")
 
+# --- COMPLETELY REWRITTEN FOR CTRANSLATE2 PERFORMANCE ---
 def translate_local(texts, target_lang):
     if not texts: return [], 0, 0
     profiler.counters["api_calls"] += 1
     
+    # NLLB Language mapping (Uses distinct codes from mBART)
     lang_map = {
-        "ar-SA": "ar_AR", "de-DE": "de_DE", "en-US": "en_XX", "es-ES": "es_XX",
-        "fr-FR": "fr_XX", "hi-IN": "hi_IN", "ja-JP": "ja_XX", "ru-RU": "ru_RU",
-        "zh-CN": "zh_CN", "it-IT": "it_IT", "nl-NL": "nl_XX", "pt-BR": "pt_BR",
-        "ta-IN": "ta_IN", "te-IN": "te_IN", "mr-IN": "mr_IN", "bn-IN": "bn_IN"
+        "ar-SA": "arb_Arab", "de-DE": "deu_Latn", "en-US": "eng_Latn", "es-ES": "spa_Latn",
+        "fr-FR": "fra_Latn", "hi-IN": "hin_Deva", "ja-JP": "jpn_Jpan", "ru-RU": "rus_Cyrl",
+        "zh-CN": "zho_Hans", "it-IT": "ita_Latn", "nl-NL": "nld_Latn", "pt-BR": "por_Latn",
+        "ta-IN": "tam_Taml", "te-IN": "tel_Telu", "mr-IN": "mar_Deva", "bn-IN": "ben_Beng",
+        "kn-IN": "kan_Knda"
     }
-    tgt_token = lang_map.get(target_lang, "en_XX")
+    tgt_token = lang_map.get(target_lang, "eng_Latn")
     
     profiler.start_timer("hf_network_latency") 
     try:
-        ai_model.eval()
-        tokenizer.src_lang = "en_XX"
-        encoded = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=1024).to(device)
+        tokenizer.src_lang = "eng_Latn"
         
-        with torch.no_grad():
-            generated_tokens = ai_model.generate(
-                **encoded,
-                forced_bos_token_id=tokenizer.lang_code_to_id.get(tgt_token, tokenizer.lang_code_to_id["en_XX"]),
-                max_length=512,
-                num_beams=5 
-            )
-            
-        translations = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
-        latency = profiler.stop_timer("hf_network_latency")
+        # 1. Tokenize inputs to pure string arrays (Fast CPU op)
+        source_tokens = [tokenizer.convert_ids_to_tokens(tokenizer.encode(text)) for text in texts]
+        
+        # 2. Pure C++ Engine Inference
+        results = translator.translate_batch(
+            source_tokens,
+            target_prefix=[[tgt_token]] * len(texts),
+            beam_size=5, # Optimally fast while maintaining quality. Change to 1 for absolute max speed.
+            batch_type="tokens", # Dynamic padding removal
+            max_batch_size=1024
+        )
+        
+        # 3. Detokenize back to string (Fast CPU op)
+        translations = []
+        for result in results:
+            # Drop the language token prefix from the beginning
+            target_tokens = result.hypotheses[0][1:]
+            translations.append(tokenizer.decode(tokenizer.convert_tokens_to_ids(target_tokens)))
 
-        del encoded
-        del generated_tokens
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        gc.collect()
+        latency = profiler.stop_timer("hf_network_latency")
 
         return translations, latency, 0.0
     except Exception as e:
@@ -345,7 +353,7 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
                         target_node.text = trans
                     
                     src = current_batch_texts[b_idx]
-                    db_write_batch.append((src, target_lang, trans, src, target_lang, trans, "mbart-large-local"))
+                    db_write_batch.append((src, target_lang, trans, src, target_lang, trans, "nllb-600M-ct2"))
                     
                     multiplier = LANG_TOKEN_MULTIPLIERS.get(target_lang, 0.5)
                     output_tokens = len(trans) / (4.0 * multiplier)
@@ -390,7 +398,6 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
     mm.measure_float_put(m_overhead, profiler.counters["telemetry_overhead_ms"])
     profiler.measure_telemetry_overhead(mm.record, tag_map_module.TagMap())
 
-    # MEMORY FIX: Force clear local large objects so they don't carry to the next file
     del translations_map
     del all_source_texts
     del file_units
@@ -411,7 +418,6 @@ def main(config_path):
     
     try:
         blob_service = BlobServiceClient.from_connection_string(config['blob_connection_string'])
-        # FIX: Provide strict fallback names just in case config misses them
         raw_container_name = config.get('raw_container', 'raw-files')
         trans_container_name = config.get('translated_container', 'trans-files')
         
@@ -434,10 +440,8 @@ def main(config_path):
     except: exporter = None
 
     try:
-        # PULL BLOBS FROM AZURE
         blobs = list(raw_container.list_blobs())
         
-        # LOGGING FIX: Tell user exactly what the container sees to avoid silent exits
         if not blobs:
             logger.warning(f"⚠️ ZERO files found in container '{raw_container_name}'. Are you sure Phase 1 ran?")
         else:
@@ -453,8 +457,6 @@ def main(config_path):
                     f.write(raw_container.download_blob(blob.name).readall())
                 download_ms = profiler.stop_timer("blob_download")
 
-                # LOGIC FIX: Instead of looping over all TargetLanguages and destroying the flow,
-                # extract the language directly from the phase1 file name (e.g., resx_file_10.fr-FR.xlf -> fr-FR)
                 parts = blob.name.split('.')
                 if len(parts) >= 3:
                     target_lang = parts[-2]
@@ -468,7 +470,6 @@ def main(config_path):
                     
                     logger.info(f"Translating {local_safe_name} to {target_lang}...")
                     
-                    # Process the single language XLIFF file
                     file_stats, xml_parse_ms, xml_write_ms, total_source_chars, total_translated_chars = process_xlf_file(local_safe_name, target_lang, conn, exporter)
                     
                     logger.info(f"⬆️ Uploading processed {blob.name} to translated container...")
@@ -544,24 +545,20 @@ def main(config_path):
                         "api_throttled_429": profiler.counters.get("api_throttled", 0)
                     }
                     
-                    # TELEMETRY GUARANTEE FIX
                     logger.info(f"📊 RESEARCH_DATA: {json.dumps(metrics_payload)}")
                     if az_handler:
                         try:
                             az_handler.flush()
                         except Exception as e:
                             pass
-                    # Sleep ensures background worker thread has time to send network packet
                     time.sleep(2)
 
                 except Exception as loop_e:
                     logger.error(f"❌ Error processing {target_lang} for {blob.name}: {loop_e}")
             
-                # Delete Cloud Blob and local file so container space stays clean
                 raw_container.delete_blob(blob.name)
                 if os.path.exists(local_safe_name): os.remove(local_safe_name)
                 
-                # GC Collection to reset RAM baseline
                 gc.collect()
 
     except Exception as e:
