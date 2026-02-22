@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import logging
+import requests
 import pyodbc
 import time
 import psutil
@@ -9,8 +10,7 @@ import threading
 import statistics
 import xml.etree.ElementTree as ET
 import uuid
-import torch
-from transformers import MBartForConditionalGeneration, MBart50TokenizerFast
+from typing import List, Dict, Any
 from azure.storage.blob import BlobServiceClient
 from opencensus.ext.azure.log_exporter import AzureLogHandler
 from opencensus.ext.azure import metrics_exporter
@@ -22,22 +22,14 @@ from opencensus.tags import tag_map as tag_map_module
 
 # --- 1. CONFIGURATION ---
 BATCH_SIZE = 5 
-TOKEN_LIMIT = 200
+TOKEN_LIMIT = 200 # Adaptive Batch Limit
+API_URL_TEMPLATE = "https://router.huggingface.co/hf-inference/models/{}"
 
+# RESEARCH HEURISTIC: Tokenization Density Multipliers by Language Script
 LANG_TOKEN_MULTIPLIERS = {
     "zh-CN": 1.2, "ja-JP": 1.1, "ru-RU": 0.5, "hi-IN": 0.3, 
-    "te-IN": 0.2, "fr-FR": 0.9, "es-ES": 0.9, "de-DE": 0.8, "ar-SA": 0.4,
-    "ta-IN": 0.2, "mr-IN": 0.3, "bn-IN": 0.3, "kn-IN": 0.2
+    "te-IN": 0.2, "fr-FR": 0.9, "es-ES": 0.9, "de-DE": 0.8, "ar-SA": 0.4
 }
-
-# --- PRE-LOAD LOCAL AI MODEL (Zero Network Latency) ---
-print("🧠 Loading local mBART-50 Model into RAM...")
-model_name = "facebook/mbart-large-50-many-to-many-mmt"
-tokenizer = MBart50TokenizerFast.from_pretrained(model_name)
-ai_model = MBartForConditionalGeneration.from_pretrained(model_name)
-device = "cuda" if torch.cuda.is_available() else "cpu"
-ai_model.to(device)
-print(f"✅ Model loaded successfully on {device.upper()}")
 
 # --- 2. GLOBAL METRICS DEFINITION ---
 m_latency = measure_module.MeasureFloat("hf_latency", "Latency of HF API", "ms")
@@ -57,8 +49,10 @@ def register_metrics_views(exporter):
         view_manager.register_view(view_overhead)
         view_manager.register_view(view_cpu)
         
-        if exporter: view_manager.register_exporter(exporter)
-    except Exception as e: print(f"⚠️ Metrics registration warning: {e}")
+        if exporter:
+            view_manager.register_exporter(exporter)
+    except Exception as e:
+        print(f"⚠️ Metrics registration warning: {e}")
 
 # --- 3. ADVANCED PROFILER CLASS ---
 class PerformanceProfiler:
@@ -70,21 +64,40 @@ class PerformanceProfiler:
     def reset_file_metrics(self):
         self.start_ts = time.perf_counter()
         self.counters = {
-            "telemetry_overhead_ms": 0.0, "api_calls": 0, "cache_hits": 0, "cache_misses": 0,
-            "sql_reads": 0, "sql_writes": 0, "tokens_processed": 0.0,
-            "total_input_tokens": 0.0, "total_output_tokens": 0.0,
-            "api_retries": 0, "api_failures": 0,  "api_throttled": 0, 
-            "total_batches": 0, "total_chars_processed": 0, "total_segments": 0,
-            "total_tm_hits": 0, "total_nmt_calls": 0, "nmt_latencies": [], "sleep_time_ms": 0.0 
+            "telemetry_overhead_ms": 0.0,
+            "api_calls": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "sql_reads": 0,
+            "sql_writes": 0,
+            "tokens_processed": 0.0,
+            "total_input_tokens": 0.0,
+            "total_output_tokens": 0.0,
+            "api_retries": 0,
+            "api_failures": 0, 
+            "api_throttled": 0, 
+            "total_batches": 0,
+            "total_chars_processed": 0,
+            "total_segments": 0,
+            "total_tm_hits": 0,
+            "total_nmt_calls": 0,
+            "nmt_latencies": [],
+            "sleep_time_ms": 0.0 
         }
     
-    def start_timer(self, name): self.timings[name] = time.perf_counter()
+    def start_timer(self, name):
+        self.timings[name] = time.perf_counter()
+
     def stop_timer(self, name):
-        if name in self.timings: return (time.perf_counter() - self.timings[name]) * 1000
+        if name in self.timings:
+            return (time.perf_counter() - self.timings[name]) * 1000
         return 0
 
     def get_system_impact(self):
-        return {"cpu_percent": self.process.cpu_percent(interval=None), "memory_mb": self.process.memory_info().rss / 1024 / 1024}
+        return {
+            "cpu_percent": self.process.cpu_percent(interval=None),
+            "memory_mb": self.process.memory_info().rss / 1024 / 1024
+        }
 
     def measure_telemetry(self, start_time):
         overhead = (time.perf_counter() - start_time) * 1000 
@@ -107,20 +120,25 @@ class PerformanceProfiler:
                 self.counters["total_nmt_calls"] += 1
                 self.counters["nmt_latencies"].append(nmt_latency)
             return
+
         self.counters["total_segments"] += 1
         if tm_hit:
             self.counters["total_tm_hits"] += 1
             self.counters["cache_hits"] += 1 
-        else: self.counters["cache_misses"] += 1
+        else:
+             self.counters["cache_misses"] += 1
 
     def get_summary_stats(self):
         elapsed = time.perf_counter() - self.start_ts
         avg_nmt = statistics.mean(self.counters["nmt_latencies"]) if self.counters["nmt_latencies"] else 0.0
         throughput = (self.counters["total_segments"] / elapsed) * 3600 if elapsed > 0 else 0.0
         return {
-            "total_segments": self.counters["total_segments"], "total_tm_hits": self.counters["total_tm_hits"],
-            "total_nmt_calls": self.counters["total_nmt_calls"], "total_time_sec": round(elapsed, 2),
-            "avg_nmt_latency_sec": round(avg_nmt / 1000, 4),  "overall_throughput_seg_per_hr": int(throughput)
+            "total_segments": self.counters["total_segments"],
+            "total_tm_hits": self.counters["total_tm_hits"],
+            "total_nmt_calls": self.counters["total_nmt_calls"],
+            "total_time_sec": round(elapsed, 2),
+            "avg_nmt_latency_sec": round(avg_nmt / 1000, 4), 
+            "overall_throughput_seg_per_hr": int(throughput)
         }
 
 profiler = PerformanceProfiler()
@@ -130,19 +148,24 @@ def setup_logging(config):
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
     if logger.hasHandlers(): logger.handlers.clear()
+    
     c_handler = logging.StreamHandler(sys.stdout)
     c_handler.setFormatter(logging.Formatter('%(asctime)s [INFO] %(message)s'))
     logger.addHandler(c_handler)
+
     az_handler = None
     try:
         if config.get('app_insights_connection_string'):
             def init_azure():
                 handler = AzureLogHandler(connection_string=config['app_insights_connection_string'])
-                if not hasattr(handler, 'lock') or handler.lock is None: handler.lock = threading.RLock()
+                if not hasattr(handler, 'lock') or handler.lock is None:
+                    handler.lock = threading.RLock()
                 return handler
             az_handler = profiler.measure_telemetry_overhead(init_azure)
             logger.addHandler(az_handler)
-    except Exception as e: print(f"⚠️ Could not set up Azure logging: {e}")
+            logger.info("✅ Azure Application Insights configured")
+    except Exception as e:
+        print(f"⚠️ Could not set up Azure logging: {e}")
     return logger, az_handler
 
 # --- 5. DATABASE UTILS ---
@@ -152,7 +175,9 @@ def get_sql_connection(conn_str):
         conn = pyodbc.connect(conn_str)
         profiler.stop_timer("sql_connect")
         return conn, 0
-    except Exception as e: return None, 0
+    except Exception as e:
+        print(f"❌ SQL Connection Error: {e}")
+        return None, 0
 
 def query_translation(cursor, source_text, target_lang):
     profiler.counters["sql_reads"] += 1
@@ -160,8 +185,11 @@ def query_translation(cursor, source_text, target_lang):
     try:
         cursor.execute("SELECT TranslatedText FROM Translations WHERE SourceText=? AND TargetLang=?", (source_text, target_lang))
         result = cursor.fetchone()
-        return (result[0] if result else None), profiler.stop_timer("sql_read_latency")
-    except Exception as e: return None, profiler.stop_timer("sql_read_latency")
+        latency = profiler.stop_timer("sql_read_latency")
+        return (result[0] if result else None), latency
+    except Exception as e:
+        print(f"⚠️ SQL Query Error: {e}")
+        return None, 0
 
 def save_translation(cursor, source, target, lang, model):
     if not target: return 0
@@ -178,47 +206,63 @@ def save_translation(cursor, source, target, lang, model):
         """
         cursor.execute(query, source, lang, target, source, lang, target, model)
         return profiler.stop_timer("sql_write_latency")
-    except Exception as e: return profiler.stop_timer("sql_write_latency")
+    except Exception as e:
+        print(f"⚠️ SQL Save Error: {e}")
+        return 0
 
-# --- 6. LOCAL HUGGING FACE INFERENCE ---
-def translate_local(texts, target_lang):
+# --- 6. HUGGING FACE API ---
+def translate_with_hf(texts, target_lang, hf_token, model_name="facebook/mbart-large-50-many-to-many-mmt"):
     if not texts: return [], 0, 0
+    
     profiler.counters["api_calls"] += 1
+    api_url = API_URL_TEMPLATE.format(model_name)
+    headers = {"Authorization": f"Bearer {hf_token}"}
     
     lang_map = {
         "ar-SA": "ar_AR", "de-DE": "de_DE", "en-US": "en_XX", "es-ES": "es_XX",
         "fr-FR": "fr_XX", "hi-IN": "hi_IN", "ja-JP": "ja_XX", "ru-RU": "ru_RU",
-        "zh-CN": "zh_CN", "it-IT": "it_IT", "nl-NL": "nl_XX", "pt-BR": "pt_BR",
-        "ta-IN": "ta_IN", "te-IN": "te_IN", "mr-IN": "mr_IN", "bn-IN": "bn_IN"
+        "zh-CN": "zh_CN", "it-IT": "it_IT", "nl-NL": "nl_XX", "pt-BR": "pt_BR"
     }
-    tgt_token = lang_map.get(target_lang, "en_XX") # Default fallback
+    tgt_token = lang_map.get(target_lang, target_lang.replace("-", "_"))
     
-    profiler.start_timer("hf_network_latency") # Reused timer name for KQL tracking (measures Compute now)
+    payload = {"inputs": texts, "parameters": {"src_lang": "en_XX", "tgt_lang": tgt_token}}
+    
+    profiler.start_timer("hf_network_latency")
     try:
-        tokenizer.src_lang = "en_XX"
-        encoded = tokenizer(texts, return_tensors="pt", padding=True, truncation=True).to(device)
+        response = requests.post(api_url, headers=headers, json=payload, timeout=60)
+        latency = profiler.stop_timer("hf_network_latency")
         
-        generated_tokens = ai_model.generate(
-            **encoded,
-            forced_bos_token_id=tokenizer.lang_code_to_id.get(tgt_token, tokenizer.lang_code_to_id["en_XX"]),
-            max_length=200
-        )
-        translations = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
-        latency = profiler.stop_timer("hf_network_latency")
-        return translations, latency, 0.0
-    except Exception as e:
-        print(f"❌ Local Inference Error: {e}")
-        latency = profiler.stop_timer("hf_network_latency")
-        profiler.counters["api_failures"] += 1
+        if response.status_code == 410 or response.status_code == 404:
+            print(f"❌ HF API Error {response.status_code}: Model endpoint moved/gone.")
+            return [None] * len(texts), latency, 0.0
+        if response.status_code == 429:
+            profiler.counters["api_throttled"] += 1
+            print("⚠️ Hugging Face Rate Limit Hit (429). Forcing a retry...")
+            
+        response.raise_for_status()
+        result = response.json()
+        
+        translations = []
+        if isinstance(result, list):
+            for item in result:
+                if "translation_text" in item: translations.append(item["translation_text"])
+                elif "generated_text" in item: translations.append(item["generated_text"])
+                else: translations.append(None)
+            return translations, latency, 0.0
+            
         return [None] * len(texts), latency, 0.0
 
+    except Exception as e:
+        latency = profiler.stop_timer("hf_network_latency")
+        return [None] * len(texts), latency, 0.0
+    
 # --- 7. MAIN PROCESSING LOOP ---
 def process_xlf_file(local_path, target_lang, conn, exporter):
     profiler.start_timer("xml_parse")
     try:
         tree = ET.parse(local_path)
         root = tree.getroot()
-        file_units = root.findall('.//trans-unit')
+        file_units = root.findall('.//data')
         xml_parse_ms = profiler.stop_timer("xml_parse")
     except ET.ParseError as e: return {"total_api_time_ms": 0, "total_sql_time_ms": 0, "total_commit_time_ms": 0}, 0, 0, 0, 0
     
@@ -228,7 +272,7 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
     missing_units = [] 
     
     for i, unit in enumerate(file_units):
-        source_node = unit.find('source')
+        source_node = unit.find('value')
         source_text = source_node.text if source_node is not None else None
         if not source_text: continue
 
@@ -239,9 +283,11 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
         if cached_trans:
             profiler.add_segment_stats(tm_hit=True) 
             total_translated_chars += len(cached_trans) 
-            target = unit.find('target')
-            if target is None: target = ET.SubElement(unit, 'target')
-            target.text = cached_trans
+            
+            # CORRECT CACHE FIX
+            value_node = unit.find('value')
+            if value_node is not None:
+                value_node.text = cached_trans
             
             multiplier = LANG_TOKEN_MULTIPLIERS.get(target_lang, 0.5)
             output_tokens = len(cached_trans) / (4.0 * multiplier)
@@ -290,9 +336,11 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
                     
                     idx_in_file = current_batch_indices[b_idx]
                     target_unit = file_units[idx_in_file]
-                    target = target_unit.find('target')
-                    if target is None: target = ET.SubElement(target_unit, 'target')
-                    target.text = trans
+                    
+                    # CORRECT NMT FIX
+                    value_node = target_unit.find('value')
+                    if value_node is not None:
+                        value_node.text = trans
                     
                     write_time = save_translation(cursor, current_batch_texts[b_idx], trans, target_lang, "mbart-large-local")
                     file_stats["total_sql_time_ms"] += write_time
@@ -369,6 +417,7 @@ def main(config_path):
         for blob in blobs:
             if blob.name.endswith('.xlf'):
                 profiler.reset_file_metrics() 
+                
                 profiler.start_timer(f"file_{blob.name}")
                 logger.info(f"⬇️ Downloading {blob.name}...")
                 
@@ -378,7 +427,7 @@ def main(config_path):
                 download_ms = profiler.stop_timer("blob_download")
 
                 target_lang = blob.name.split('.')[-2]
-                file_stats, xml_parse_ms, xml_write_ms, total_source_chars, total_translated_chars = process_xlf_file(blob.name, target_lang, conn, exporter)
+                file_stats, xml_parse_ms, xml_write_ms, total_source_chars, total_translated_chars = process_xlf_file(blob.name, target_lang, conn, config['hf_api_token'], exporter)
                 
                 logger.info(f"⬆️ Uploading processed {blob.name}...")
                 profiler.start_timer("blob_upload")
@@ -390,8 +439,10 @@ def main(config_path):
                 if os.path.exists(blob.name): os.remove(blob.name)
                 
                 file_duration = profiler.stop_timer(f"file_{blob.name}")
-                summary = profiler.get_summary_stats()
                 
+                summary = profiler.get_summary_stats()
+                logger.info("METRICS SUMMARY: %s", json.dumps(summary, ensure_ascii=False))
+
                 total_tokens = profiler.counters["tokens_processed"]
                 hf_time = file_stats["total_api_time_ms"]
                 ms_per_token = round(hf_time / max(1, total_tokens), 2)
@@ -406,7 +457,7 @@ def main(config_path):
                 total_output_t = profiler.counters["total_output_tokens"]
                 batches = max(1, profiler.counters["total_batches"])
                 elapsed_s = max(1, file_duration / 1000)
-                total_network_wait_ms = file_stats["total_sql_time_ms"] + file_stats["total_commit_time_ms"] + download_ms + upload_ms # hf_time is compute now!
+                total_network_wait_ms = hf_time + file_stats["total_sql_time_ms"] + file_stats["total_commit_time_ms"] + download_ms + upload_ms
                 compute_time_ms = max(0, file_duration - total_network_wait_ms - sleep_time_ms)
                 io_bound_ratio = round((total_network_wait_ms / max(1, file_duration)) * 100, 2)
                 
@@ -418,8 +469,10 @@ def main(config_path):
                     "target_lang": target_lang,
                     "throughput_seg_per_hr": summary['overall_throughput_seg_per_hr'],
                     "throughput_input_tokens_per_hr": round((total_input_t / elapsed_s) * 3600, 2),
-                    "total_api_call_logically": profiler.counters["total_batches"], 
-                    "actual_api_call": profiler.counters["api_calls"],    
+                    # --- RESEARCH METRIC: BATCHING vs RESILIENCE ---
+                    "total_api_call_logically": profiler.counters["total_batches"], # Logical Requests
+                    "actual_api_call": profiler.counters["api_calls"],    # Physical Requests (Inc. Retries)
+                    # AI / ML Research
                     "total_segments": summary["total_segments"],
                     "avg_segment_char_length": avg_segment_len,
                     "text_expansion_ratio": round(total_translated_chars / max(1, total_source_chars), 2),
@@ -431,16 +484,24 @@ def main(config_path):
                     "char_per_token_ratio": char_token_ratio,   
                     "total_token_input_plus_output_per_batch": avg_batch_size,
                     "time_per_token": ms_per_token,
+                    
+                    # TM & Architecture Efficiency
                     "nmt_calls": summary["total_nmt_calls"],
                     "transational_memory_hits": summary["total_tm_hits"],
                     "cache_rate": (profiler.counters["cache_hits"] / max(1, profiler.counters["cache_hits"] + profiler.counters["cache_misses"])) * 100,
+                    
+                    # Execution
                     "total_time": file_duration,
+                    
+                    # Micro-Latencies (The VM vs Cloud Core Argument)
                     "cold_start_init_ms": cold_start_ms,
                     "compute_time_ms": compute_time_ms,
                     "total_sleep_time_ms": sleep_time_ms, 
                     "network_wait_time_ms": total_network_wait_ms,
                     "io_bound_pipeline_pct": io_bound_ratio,
-                    "hf_api_wait_ms": hf_time, # Actually CPU inference time now
+                    
+                    # Latency Breakdown
+                    "hf_api_wait_ms": hf_time,
                     "azure_sql_query_ms": file_stats["total_sql_time_ms"],
                     "azure_sql_commit_ms": file_stats["total_commit_time_ms"],
                     "xml_parse_ms": xml_parse_ms,
@@ -448,6 +509,8 @@ def main(config_path):
                     "blob_download_ms": download_ms, 
                     "blob_upload_ms": upload_ms,
                     "telemetry_overhead_ms": profiler.counters["telemetry_overhead_ms"],
+                    
+                    # System Health & Economics
                     "cpu_usage_pct": sys_stats['cpu_percent'],
                     "memory_mb": sys_stats['memory_mb'],
                     "serverless_cost_gb_sec": round((sys_stats['memory_mb'] / 1024) * (file_duration / 1000), 4),

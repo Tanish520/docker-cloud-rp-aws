@@ -1,0 +1,9 @@
+# .dockerignore
+.git
+.venv
+venv
+__pycache__
+*.log
+*.xlf
+*.resx
+.vscode

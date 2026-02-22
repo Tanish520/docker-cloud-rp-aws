@@ -1,2 +1,21 @@
 *.log
 __pycache__/
+# --- Docker Specifics ---
+# We ignore the virtual disk if it ever accidentally ends up in the folder
+*.vhdx
+*.vdi
+*.vmdk
+
+# --- Python & AI ---
+__pycache__/
+.venv/
+venv/
+*.pyc
+
+# --- Large AI Models ---
+# This ensures you don't accidentally push the 2.5GB mBART model to GitHub
+models/
+huggingface/
+*.bin
+*.pt
+*.pth

@@ -33,7 +33,7 @@ stages:
             displayName: "Run Phase1"
 
   - stage: Phase2
-    displayName: "2️⃣ Translate (Docker + Local mBART)"
+    displayName: "2️⃣ Translate (SQL + mBART)"
     dependsOn: Phase1
     condition: succeeded()
     jobs:
@@ -43,38 +43,41 @@ stages:
         steps:
           - checkout: self
 
-          # Inject secrets into config.json
+          # Install ODBC driver + sqlcmd + jq, inject secrets
           - script: |
               set -ex
-              sudo apt-get update && sudo apt-get install -y jq
+              curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+              curl https://packages.microsoft.com/config/ubuntu/20.04/prod.list | sudo tee /etc/apt/sources.list.d/msprod.list
+              sudo apt-get update
+              sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 mssql-tools18 unixodbc-dev jq
+              
+              # make sqlcmd available
+              echo 'export PATH="$PATH:/opt/mssql-tools18/bin"' >> ~/.bashrc
+              export PATH="$PATH:/opt/mssql-tools18/bin"
+
+              # inject secrets into config.json
               jq '.blob_connection_string = env.AZURE_STORAGE_CONN |
                   .sql_conn_str = env.AZURE_SQL_CONN |
+                  .hf_api_token = env.HUGGINGFACE_TOKEN |
                   .app_insights_connection_string = env.APPINSIGHTS_CONNECTION_STRING' config.json > config.tmp.json
               mv config.tmp.json config.json
             env:
               AZURE_STORAGE_CONN: $(AZURE_STORAGE_CONN)
               AZURE_SQL_CONN: $(AZURE_SQL_CONN)
+              HUGGINGFACE_TOKEN: $(HUGGINGFACE_TOKEN)
               APPINSIGHTS_CONNECTION_STRING: $(APPINSIGHTS_CONNECTION_STRING)
-            workingDirectory: 'Docker_Local_Inference' 
-            displayName: "Inject secrets into config.json"
+            workingDirectory: 'API_based_HFace_AppInsight' # <-- ADD THIS
+            displayName: "Install ODBC + Inject secrets"
 
-          # Build the Docker Image
+          # Run Phase2 translation with detailed logs
           - script: |
               set -e
-              echo "🚀 Building Docker Image (Downloading mBART-50)..."
-              docker build -t local-ai-translator .
-            workingDirectory: 'Docker_Local_Inference' 
-            displayName: "Build Docker Image"
-
-          # Run the Docker Image
-          - script: |
-              set -e
-              echo "🚀 Running Translation inside Docker..."
-              # -v mounts the current folder so the container can read config.json and save logs
-              docker run -v $(pwd):/app local-ai-translator python translation.py config.json 2>&1 | tee phase2.log
+              python3 -m pip install azure-storage-blob requests pyodbc opencensus-ext-azure psutil
+              echo "🚀 Starting Phase2 translation..."
+              python3 translation.py config.json 2>&1 | tee phase2.log
               echo "✅ Phase2 completed. Full log saved to phase2.log"
-            workingDirectory: 'Docker_Local_Inference'
-            displayName: "Run Phase2 (Docker Inference)"
+            workingDirectory: 'API_based_HFace_AppInsight' # <-- ADD THIS
+            displayName: "Run Phase2 (mBART + SQL TM)"
 
   - stage: Phase3
     displayName: "3️⃣ Integrate, Commit & Push"

@@ -234,7 +234,7 @@ def translate_local(texts, target_lang):
                 **encoded,
                 forced_bos_token_id=tokenizer.lang_code_to_id.get(tgt_token, tokenizer.lang_code_to_id["en_XX"]),
                 max_length=512,
-                num_beams=1   # MASSIVE LATENCY FIX: Restored to 1. Using 5 makes the model 5x slower.
+                num_beams=1  
             )
             
         translations = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
