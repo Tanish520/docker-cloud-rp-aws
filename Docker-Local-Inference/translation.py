@@ -4,6 +4,7 @@ import json
 import logging
 import pyodbc
 import time
+import asyncio
 import psutil
 import threading
 import statistics
@@ -269,7 +270,10 @@ def translate_local(texts, target_lang):
         profiler.counters["api_failures"] += 1
         return [None] * len(texts), latency, 0.0
 
-def process_xlf_file(local_path, target_lang, conn, exporter):
+async def translate_local_async(texts, target_lang):
+    return await asyncio.to_thread(translate_local, texts, target_lang)
+
+async def process_xlf_file(local_path, target_lang, conn, exporter):
     profiler.start_timer("xml_parse")
     try:
         tree = ET.parse(local_path)
@@ -322,12 +326,12 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
     current_batch_indices = []
     current_batch_tokens = 0
 
-    def flush_batch():
+    async def flush_batch():
         nonlocal total_translated_chars, current_batch_texts, current_batch_indices, current_batch_tokens
         if not current_batch_texts: return
         
         profiler.counters["total_batches"] += 1 
-        translations, batch_latency, _ = translate_local(current_batch_texts, target_lang)
+        translations, batch_latency, _ = await translate_local_async(current_batch_texts, target_lang)
         file_stats["total_api_time_ms"] += batch_latency
         
         db_write_batch = [] 
@@ -390,13 +394,13 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
         segment_tokens = len(source_text) / 4.0
         
         if (current_batch_tokens + segment_tokens > TOKEN_LIMIT or len(current_batch_texts) >= BATCH_SIZE) and current_batch_texts:
-            flush_batch()
+            await flush_batch()
             
         current_batch_texts.append(source_text)
         current_batch_indices.append(original_unit_idx)
         current_batch_tokens += segment_tokens
 
-    flush_batch()
+    await flush_batch()
 
     profiler.start_timer("xml_write")
     tree.write(local_path, encoding='utf-8', xml_declaration=True)
@@ -415,7 +419,7 @@ def process_xlf_file(local_path, target_lang, conn, exporter):
 
     return file_stats, xml_parse_ms, xml_write_ms, total_source_chars, total_translated_chars
 
-def main(config_path):
+async def main(config_path):
     profiler.start_timer("total_execution")
     if not os.path.exists(config_path): 
         print("❌ Config file not found!")
@@ -478,7 +482,7 @@ def main(config_path):
                     
                     logger.info(f"Translating {local_safe_name} to {target_lang}...")
                     
-                    file_stats, xml_parse_ms, xml_write_ms, total_source_chars, total_translated_chars = process_xlf_file(local_safe_name, target_lang, conn, exporter)
+                    file_stats, xml_parse_ms, xml_write_ms, total_source_chars, total_translated_chars = await process_xlf_file(local_safe_name, target_lang, conn, exporter)
                     
                     logger.info(f"⬆️ Uploading processed {blob.name} to translated container...")
                     profiler.start_timer("blob_upload")
@@ -559,7 +563,9 @@ def main(config_path):
                             az_handler.flush()
                         except Exception as e:
                             pass
-                    time.sleep(2)
+                    s_start = time.perf_counter()
+                    await asyncio.sleep(2)
+                    profiler.counters["sleep_time_ms"] += (time.perf_counter() - s_start) * 1000
 
                 except Exception as loop_e:
                     logger.error(f"❌ Error processing {target_lang} for {blob.name}: {loop_e}")
@@ -581,4 +587,4 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python translation.py config.json")
     else:
-        main(sys.argv[1])
+        asyncio.run(main(sys.argv[1]))
