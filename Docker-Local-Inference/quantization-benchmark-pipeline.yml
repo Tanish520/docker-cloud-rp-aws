@@ -1,0 +1,46 @@
+trigger: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+jobs:
+- job: RunBenchmark
+  displayName: "🏃 NLLB Quantization Benchmark"
+  timeoutInMinutes: 60
+  
+  steps:
+  - checkout: self
+
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.10'
+      addToPath: true
+
+  - script: |
+      set -e
+      echo "📦 Installing benchmark dependencies..."
+      python3 -m pip install ctranslate2 transformers torch sentencepiece psutil
+      
+      # Verify ctranslate2 converter is in path
+      ct2-transformers-converter --help > /dev/null
+    displayName: "Install Dependencies"
+
+  - script: |
+      set -e
+      echo "🚀 Starting Benchmark..."
+      cd docker_version/Docker-Local-Inference
+      python3 quantization_benchmark.py
+    displayName: "Run Quantization Script"
+
+  - task: PublishBuildArtifacts@1
+    displayName: "📊 Publish Benchmark Results"
+    condition: always()
+    inputs:
+      PathtoPublish: 'docker_version/Docker-Local-Inference/quantization_benchmark_results'
+      ArtifactName: 'QuantizationResults'
+      publishLocation: 'Container'
+
+  - script: |
+      echo "🧹 Cleaning up converted models to free space..."
+      rm -rf docker_version/Docker-Local-Inference/quantization_benchmark_results/model_*
+    displayName: "Cleanup Large Files"
