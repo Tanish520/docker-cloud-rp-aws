@@ -132,7 +132,7 @@ jobs:
           set -ex
           sudo apt-get update && sudo apt-get install -y jq
           
-          cd docker_version/Docker-Local-Inference
+          cd Docker-Local-Inference
           
           # Inject Application Insights connection string into config.json
           if [ -f "config.json" ]; then
@@ -148,7 +148,7 @@ jobs:
       - script: |
           set -e
           echo "🚀 Starting Benchmark..."
-          cd docker_version/Docker-Local-Inference
+          cd Docker-Local-Inference
           # Pass config.json so the script picks up the AzureLogHandler connection string
           python3 quantization_benchmark.py config.json
         displayName: "Run Quantization Script"
@@ -157,11 +157,11 @@ jobs:
         displayName: "📊 Publish Benchmark Results"
         condition: always()
         inputs:
-          PathtoPublish: 'docker_version/Docker-Local-Inference/quantization_benchmark_results'
+          PathtoPublish: 'Docker-Local-Inference/quantization_benchmark_results'
           ArtifactName: 'QuantizationResults'
           publishLocation: 'Container'
 
       - script: |
           echo "🧹 Cleaning up converted models to free space..."
-          rm -rf docker_version/Docker-Local-Inference/quantization_benchmark_results/model_*
+          rm -rf Docker-Local-Inference/quantization_benchmark_results/model_*
         displayName: "Cleanup Large Files"
