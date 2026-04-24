@@ -48,7 +48,7 @@ jobs:
               # Inject if environment variables have real values (not empty, not the variable placeholder)
               if ($env:AZURE_STORAGE_CONN -and $env:AZURE_STORAGE_CONN.Length -gt 10) {
                 Write-Host "✓ Injecting Azure Storage connection string (length: $($env:AZURE_STORAGE_CONN.Length))"
-                $config.ConnectionString = $env:AZURE_STORAGE_CONN
+                $config | Add-Member -MemberType NoteProperty -Name "blob_connection_string" -Value $env:AZURE_STORAGE_CONN -Force
                 $modified = $true
               } else {
                 Write-Host "Using connection string from config.json"
@@ -56,7 +56,7 @@ jobs:
               
               if ($env:AZURE_SQL_CONN -and $env:AZURE_SQL_CONN.Length -gt 10) {
                 Write-Host "✓ Injecting SQL connection string (length: $($env:AZURE_SQL_CONN.Length))"
-                $config.SQLConnectionString = $env:AZURE_SQL_CONN
+                $config | Add-Member -MemberType NoteProperty -Name "sql_conn_str" -Value $env:AZURE_SQL_CONN -Force
                 $modified = $true
               } else {
                 Write-Host "Using SQL connection string from config.json"
@@ -64,7 +64,7 @@ jobs:
               
               if ($env:AZURE_COG_API_KEY -and $env:AZURE_COG_API_KEY.Length -gt 10) {
                 Write-Host "✓ Injecting Azure Cognitive Services API key (length: $($env:AZURE_COG_API_KEY.Length))"
-                $config.AzureCognitiveServiceAPIKey = $env:AZURE_COG_API_KEY
+                $config | Add-Member -MemberType NoteProperty -Name "AzureCognitiveServiceAPIKey" -Value $env:AZURE_COG_API_KEY -Force
                 $modified = $true
               } else {
                 Write-Host "Using API key from config.json"
