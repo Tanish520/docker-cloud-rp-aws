@@ -169,7 +169,7 @@ stages:
           - script: |
               set -e
               echo "📦 Installing benchmark dependencies..."
-              python3 -m pip install ctranslate2 transformers torch sentencepiece psutil
+              python3 -m pip install ctranslate2 transformers torch sentencepiece psutil opencensus-ext-azure
               
               # Verify ctranslate2 converter is in path
               ct2-transformers-converter --help > /dev/null
