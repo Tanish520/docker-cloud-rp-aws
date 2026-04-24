@@ -26,10 +26,28 @@ jobs:
     displayName: "Install Dependencies"
 
   - script: |
+      set -ex
+      sudo apt-get update && sudo apt-get install -y jq
+      
+      cd docker_version/Docker-Local-Inference
+      
+      # Inject Application Insights connection string into config.json
+      if [ -f "config.json" ]; then
+        jq '.app_insights_connection_string = env.APPINSIGHTS_CONNECTION_STRING' config.json > config.tmp.json
+        mv config.tmp.json config.json
+      else
+        echo '{"app_insights_connection_string": "'$APPINSIGHTS_CONNECTION_STRING'"}' > config.json
+      fi
+    env:
+      APPINSIGHTS_CONNECTION_STRING: $(APPINSIGHTS_CONNECTION_STRING)
+    displayName: "Inject Secrets into config.json"
+
+  - script: |
       set -e
       echo "🚀 Starting Benchmark..."
       cd docker_version/Docker-Local-Inference
-      python3 quantization_benchmark.py
+      # Pass config.json so the script picks up the AzureLogHandler connection string
+      python3 quantization_benchmark.py config.json
     displayName: "Run Quantization Script"
 
   - task: PublishBuildArtifacts@1

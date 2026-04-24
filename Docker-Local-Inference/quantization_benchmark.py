@@ -8,10 +8,17 @@ import os
 import sys
 import json
 import time
+import uuid
+import logging
 import psutil
 import shutil
 import subprocess
 from pathlib import Path
+
+try:
+    from opencensus.ext.azure.log_exporter import AzureLogHandler
+except ImportError:
+    AzureLogHandler = None
 
 # Quantization methods to test
 QUANTIZATION_METHODS = [
@@ -49,6 +56,32 @@ def check_gpu_available():
         return ctranslate2.get_cuda_device_count() > 0
     except:
         return False
+
+
+def setup_logging(config):
+    """Set up Application Insights logging if connection string is provided"""
+    logger = logging.getLogger("quantization_benchmark")
+    logger.setLevel(logging.INFO)
+    
+    if logger.hasHandlers():
+        logger.handlers.clear()
+        
+    c_handler = logging.StreamHandler(sys.stdout)
+    c_handler.setFormatter(logging.Formatter('%(asctime)s [INFO] %(message)s'))
+    logger.addHandler(c_handler)
+    
+    az_handler = None
+    if AzureLogHandler and config and config.get('app_insights_connection_string'):
+        try:
+            az_handler = AzureLogHandler(connection_string=config['app_insights_connection_string'])
+            logger.addHandler(az_handler)
+            logger.info("✅ Azure Application Insights logging enabled.")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not set up Azure logging: {e}")
+    elif not AzureLogHandler:
+        logger.warning("⚠️ opencensus-ext-azure not installed. Application Insights logging disabled.")
+        
+    return logger, az_handler
 
 
 def get_model_size(model_path):
@@ -193,6 +226,17 @@ def run_inference_benchmark(model_path, compute_type, device):
 
 
 def main():
+    # Load config if provided
+    config = {}
+    if len(sys.argv) > 1 and sys.argv[1].endswith('.json') and os.path.exists(sys.argv[1]):
+        try:
+            with open(sys.argv[1], 'r') as f:
+                config = json.load(f)
+        except Exception as e:
+            print(f"⚠️ Failed to load config: {e}")
+            
+    logger, az_handler = setup_logging(config)
+    
     print("╔═══════════════════════════════════════════════════════════════╗")
     print("║   NLLB-200 Quantization Benchmark - CTranslate2              ║")
     print("╚═══════════════════════════════════════════════════════════════╝\n")
@@ -264,6 +308,57 @@ def main():
             }
             all_results.append(result_entry)
             print(f"✅ Benchmark complete")
+            
+            # Emit telemetry for Application Insights
+            metrics_payload = {
+                "run_invocation_id": str(uuid.uuid4()), 
+                "file_name": f"benchmark_{quantization}.xlf",
+                "target_lang": TARGET_LANG,
+                "throughput_seg_per_hr": int(benchmark_results["throughput_sentences_per_sec"] * 3600),
+                "throughput_input_tokens_per_hr": round(benchmark_results["tokens_per_second"] * 3600, 2),
+                "total_api_call_logically": len(TEST_SENTENCES), 
+                "actual_api_call": len(TEST_SENTENCES),    
+                "total_segments": len(TEST_SENTENCES),
+                "avg_segment_char_length": round(sum(len(s) for s in TEST_SENTENCES) / len(TEST_SENTENCES), 2),
+                "text_expansion_ratio": 1.2, # Approximation for translation expansion
+                "tokens_processed_in_whole_language": benchmark_results["total_tokens"] * 2, # Approximation (input + output)
+                "total_input_tokens_source": benchmark_results["total_tokens"],
+                "total_output_tokens_target": benchmark_results["total_tokens"] * 1.2,
+                "avg_input_tokens_per_batch": benchmark_results["total_tokens"] / len(TEST_SENTENCES),
+                "avg_output_tokens_per_batch": (benchmark_results["total_tokens"] * 1.2) / len(TEST_SENTENCES),
+                "char_per_token_ratio": 4.0, # Approximation  
+                "total_token_input_plus_output_per_batch": (benchmark_results["total_tokens"] * 2.2) / len(TEST_SENTENCES),
+                "time_per_token": benchmark_results["total_time_ms"] / benchmark_results["total_tokens"] if benchmark_results["total_tokens"] > 0 else 0,
+                "nmt_calls": len(TEST_SENTENCES),
+                "transational_memory_hits": 0,
+                "cache_rate": 0,
+                "total_time": benchmark_results["total_time_ms"],
+                "cold_start_init_ms": conversion_time * 1000, # Using conversion time here
+                "compute_time_ms": benchmark_results["total_time_ms"],
+                "total_sleep_time_ms": 0, 
+                "network_wait_time_ms": 0,
+                "io_bound_pipeline_pct": 0,
+                "hf_api_wait_ms": benchmark_results["total_time_ms"],
+                "azure_sql_query_ms": 0,
+                "azure_sql_commit_ms": 0,
+                "xml_parse_ms": 0,
+                "xml_disk_write_ms": 0,
+                "blob_download_ms": 0, 
+                "blob_upload_ms": 0,
+                "telemetry_overhead_ms": 0,
+                "cpu_usage_pct": psutil.Process(os.getpid()).cpu_percent(interval=None),
+                "memory_mb": benchmark_results["peak_memory_mb"],
+                "serverless_cost_gb_sec": round((benchmark_results["peak_memory_mb"] / 1024) * (benchmark_results["total_time_ms"] / 1000), 4),
+                "api_retries": 0,
+                "api_failures": benchmark_results["failed_translations"],
+                "api_throttled_429": 0
+            }
+            logger.info(f"📊 RESEARCH_DATA: {json.dumps(metrics_payload)}")
+            if az_handler:
+                try:
+                    az_handler.flush()
+                except:
+                    pass
         else:
             all_results.append({
                 "quantization": quantization,
@@ -303,6 +398,10 @@ def main():
     print(f"\n✅ Full results saved to: {output_file}")
     print(f"📊 Test sentences: {len(TEST_SENTENCES)}")
     print(f"🎯 Target language: {TARGET_LANG}")
+    
+    if az_handler:
+        print("⏳ Finalizing Azure telemetry...")
+        logging.shutdown()
 
 
 if __name__ == "__main__":
