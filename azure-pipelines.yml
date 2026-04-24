@@ -1,167 +1,214 @@
-trigger:
-  branches:
-    include:
-      - main
+trigger: none
+stages:
+  - stage: Phase1
+    displayName: "1️⃣ Extract & Upload"
+    jobs:
+      - job: Extract
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
 
-pool:
-  vmImage: 'ubuntu-latest'
+          # 🔐 Inject secrets into config.json
+          - script: |
+              set -ex
+              sudo apt-get update && sudo apt-get install -y jq
+              jq '.blob_connection_string = env.AZURE_STORAGE_CONN |
+                  .sql_conn_str = env.AZURE_SQL_CONN |
+                  .hf_api_token = env.HUGGINGFACE_TOKEN' config.json > config.tmp.json
+              mv config.tmp.json config.json
+            env:
+              AZURE_STORAGE_CONN: $(AZURE_STORAGE_CONN)
+              AZURE_SQL_CONN: $(AZURE_SQL_CONN)
+              HUGGINGFACE_TOKEN: $(HUGGINGFACE_TOKEN)
+              GITHUB_PAT: $(GITHUB_PAT)
+            displayName: "Inject secrets into config.json"
 
-jobs:
-  - job: Execute_Functions
-    steps:
-      - checkout: self
-        persistCredentials: true
-        
-      - task: PowerShell@2
-        displayName: 'Install Required Modules'
-        inputs:
-          targetType: 'inline'
-          script: |
-            Write-Host "Installing Az.Storage module..."
-            Install-Module -Name Az.Storage -Force -Scope CurrentUser -AllowClobber -Repository PSGallery
-            
-            Write-Host "Installing SqlServer module..."
-            Install-Module -Name SqlServer -Force -Scope CurrentUser -AllowClobber -Repository PSGallery
-            
-            Write-Host "Modules installed successfully"
-            Get-Module -ListAvailable Az.Storage, SqlServer | Format-Table Name, Version
-          pwsh: true
+          - script: |
+              set -e
+              python3 -m pip install azure-storage-blob
+              echo "🚀 Starting Phase1 extraction..."
+              python3 phase1.py config.json 2>&1 | tee phase1.log
+              echo "✅ Phase1 completed. Full log saved to phase1.log"
+            workingDirectory: 'API_based_HFace_AppInsight'
+            displayName: "Run Phase1"
 
-      - task: PowerShell@2
-        displayName: 'Inject Secrets into Config (Optional)'
-        inputs:
-          targetType: 'inline'
-          script: |
-            $configPath = "config.json"
-            Write-Host "Checking for secret injection..."
-            
-            # Debug: Show what we're receiving
-            Write-Host "DEBUG: AZURE_STORAGE_CONN length: $($env:AZURE_STORAGE_CONN.Length)"
-            Write-Host "DEBUG: AZURE_SQL_CONN length: $($env:AZURE_SQL_CONN.Length)"
-            Write-Host "DEBUG: AZURE_COG_API_KEY length: $($env:AZURE_COG_API_KEY.Length)"
-            Write-Host "DEBUG: AZURE_STORAGE_CONN starts with: $($env:AZURE_STORAGE_CONN.Substring(0, [Math]::Min(50, $env:AZURE_STORAGE_CONN.Length)))"
-            
-            if (Test-Path $configPath) {
-              $config = Get-Content $configPath | ConvertFrom-Json
-              $modified = $false
+  - stage: Phase2
+    displayName: "2️⃣ Translate (Docker + Local NLLB-CT2)"
+    dependsOn: Phase1
+    condition: succeeded()
+    jobs:
+      - job: Translate
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+
+          # Inject secrets into config.json
+          - script: |
+              set -ex
+              sudo apt-get update && sudo apt-get install -y jq
+              jq '.blob_connection_string = env.AZURE_STORAGE_CONN |
+                  .sql_conn_str = env.AZURE_SQL_CONN |
+                  .app_insights_connection_string = env.APPINSIGHTS_CONNECTION_STRING' config.json > config.tmp.json
+              mv config.tmp.json config.json
+            env:
+              AZURE_STORAGE_CONN: $(AZURE_STORAGE_CONN)
+              AZURE_SQL_CONN: $(AZURE_SQL_CONN)
+              APPINSIGHTS_CONNECTION_STRING: $(APPINSIGHTS_CONNECTION_STRING)
+              GITHUB_PAT: $(GITHUB_PAT)
+            workingDirectory: 'Docker-Local-Inference' 
+            displayName: "Inject secrets into config.json"
+
+          # 📦 NEW: Check Azure Pipeline Cache for the Optimized Model
+          - task: Cache@2
+            inputs:
+              key: 'nllb-ct2-model-v1 | "$(Agent.OS)"'
+              path: '$(System.DefaultWorkingDirectory)/Docker-Local-Inference/nllb_ct2'
+              cacheHitVar: MODEL_CACHE_RESTORED
+            displayName: "📦 Restore CTranslate2 Model from Cache"
+
+          # ⚙️ NEW: Download & Convert (Runs ONLY if the cache was missed)
+          - script: |
+              set -e
+              echo "🚀 Model not found in cache. Downloading and converting NLLB-200..."
+              pip install ctranslate2 transformers torch sentencepiece
+              ct2-transformers-converter --model facebook/nllb-200-distilled-600M --output_dir nllb_ct2 --quantization int8
+              # 🧹 CRITICAL CLEANUP: Free up 5GB of disk space so the agent doesn't crash!
+              echo "🧹 Cleaning up heavy raw model and PyTorch..."
+              pip uninstall -y torch
+              rm -rf ~/.cache/huggingface
+              echo "✅ Conversion complete."
+            workingDirectory: 'Docker-Local-Inference'
+            condition: ne(variables.MODEL_CACHE_RESTORED, 'true')
+            displayName: "⚙️ Download & Convert NLLB (If Cache Miss)"
+
+          # Build the Docker Image
+          - script: |
+              set -e
+              echo "🚀 Building Docker Image (Using Cached NLLB)..."
+              docker build -t local-ai-translator .
+            workingDirectory: 'Docker-Local-Inference' 
+            displayName: "Build Docker Image"
+
+          # Run the Docker Image
+          - script: |
+              set -e
+              echo "🚀 Running Translation inside Docker..."
+              docker run -v $(pwd):/app local-ai-translator python translation.py config.json 2>&1 | tee phase2.log
+              echo "✅ Phase2 completed. Full log saved to phase2.log"
               
-              # Inject if environment variables have real values (not empty, not the variable placeholder)
-              if ($env:AZURE_STORAGE_CONN -and $env:AZURE_STORAGE_CONN.Length -gt 10) {
-                Write-Host "✓ Injecting Azure Storage connection string (length: $($env:AZURE_STORAGE_CONN.Length))"
-                $config | Add-Member -MemberType NoteProperty -Name "blob_connection_string" -Value $env:AZURE_STORAGE_CONN -Force
-                $modified = $true
-              } else {
-                Write-Host "Using connection string from config.json"
-              }
-              
-              if ($env:AZURE_SQL_CONN -and $env:AZURE_SQL_CONN.Length -gt 10) {
-                Write-Host "✓ Injecting SQL connection string (length: $($env:AZURE_SQL_CONN.Length))"
-                $config | Add-Member -MemberType NoteProperty -Name "sql_conn_str" -Value $env:AZURE_SQL_CONN -Force
-                $modified = $true
-              } else {
-                Write-Host "Using SQL connection string from config.json"
-              }
-              
-              if ($env:AZURE_COG_API_KEY -and $env:AZURE_COG_API_KEY.Length -gt 10) {
-                Write-Host "✓ Injecting Azure Cognitive Services API key (length: $($env:AZURE_COG_API_KEY.Length))"
-                $config | Add-Member -MemberType NoteProperty -Name "AzureCognitiveServiceAPIKey" -Value $env:AZURE_COG_API_KEY -Force
-                $modified = $true
-              } else {
-                Write-Host "Using API key from config.json"
-              }
-              
-              if ($modified) {
-                $config | ConvertTo-Json -Depth 10 | Set-Content $configPath
-                Write-Host "✓✓✓ Config updated with injected secrets ✓✓✓"
-              } else {
-                Write-Host "No secrets to inject, using config.json values"
-              }
-            } else {
-              Write-Warning "Config file not found at $configPath"
-            }
-          pwsh: true
-        env:
-          AZURE_STORAGE_CONN: $(AZURE_STORAGE_CONN)
-          AZURE_SQL_CONN: $(AZURE_SQL_CONN)
-          AZURE_COG_API_KEY: $(AZURE_COG_API_KEY)
+              # 🔥 CLEANUP: Revert config.json so secrets aren't tracked by Git!
+              git checkout -- config.json || true
+            workingDirectory: 'Docker-Local-Inference'
+            displayName: "Run Phase2 (Docker Inference)"
 
-      - task: PowerShell@2
-        displayName: 'Run Function1 - Extract & Upload'
-        inputs:
-          filePath: 'scripts/function1.ps1'
-          pwsh: true
-        continueOnError: true
+  - stage: Phase3
+    displayName: "3️⃣ Integrate, Commit & Push"
+    dependsOn: Phase2
+    condition: succeeded()
+    jobs:
+      - job: Integrate
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+            persistCredentials: true
 
-      - task: PowerShell@2
-        displayName: 'Run Function2 - Translate'
-        inputs:
-          filePath: 'scripts/function2.ps1'
-          pwsh: true
-        continueOnError: true
-        
-      - task: PublishBuildArtifacts@1
-        displayName: 'Publish Logs'
-        condition: always()
-        inputs:
-          PathtoPublish: 'logs'
-          ArtifactName: 'logs'
-          publishLocation: 'Container'
+          # Inject secrets again
+          - script: |
+              set -ex
+              sudo apt-get update && sudo apt-get install -y jq
+              jq '.blob_connection_string = env.AZURE_STORAGE_CONN |
+                  .sql_conn_str = env.AZURE_SQL_CONN |
+                  .hf_api_token = env.HUGGINGFACE_TOKEN' config.json > config.tmp.json
+              mv config.tmp.json config.json
+            env:
+              AZURE_STORAGE_CONN: $(AZURE_STORAGE_CONN)
+              AZURE_SQL_CONN: $(AZURE_SQL_CONN)
+              HUGGINGFACE_TOKEN: $(HUGGINGFACE_TOKEN)
+              GITHUB_PAT: $(GITHUB_PAT)
+            workingDirectory: 'API_based_HFace_AppInsight'
+            displayName: "Inject secrets into config.json"
 
-  - job: RunBenchmark
+          - script: |
+              set -e
+              python3 -m pip install azure-storage-blob
+              echo "🚀 Starting Phase3 integration..."
+              python3 phase3.py config.json 2>&1 | tee phase3.log
+              echo "✅ Phase3 completed. Full log saved to phase3.log"
+            workingDirectory: 'API_based_HFace_AppInsight'
+            displayName: "Run Phase3"
+
+          # Commit localized resx back to repo
+          - script: |
+              set -e
+              git config user.email "buildagent@yourorg.com"
+              git config user.name  "Azure Pipelines"
+              
+            workingDirectory: 'API_based_HFace_AppInsight'
+            displayName: "🔄 Commit & Push localized .resx"
+
+  - stage: Benchmark
     displayName: "🏃 NLLB Quantization Benchmark"
-    timeoutInMinutes: 60
+    dependsOn: [] # Run in parallel or manually
     condition: eq(variables['Build.Reason'], 'Manual') # Prevent running 45min benchmark on every code push
-    steps:
-      - checkout: self
+    jobs:
+      - job: RunBenchmark
+        pool:
+          vmImage: ubuntu-latest
+        timeoutInMinutes: 60
+        steps:
+          - checkout: self
 
-      - task: UsePythonVersion@0
-        inputs:
-          versionSpec: '3.10'
-          addToPath: true
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.10'
+              addToPath: true
 
-      - script: |
-          set -e
-          echo "📦 Installing benchmark dependencies..."
-          python3 -m pip install ctranslate2 transformers torch sentencepiece psutil
-          
-          # Verify ctranslate2 converter is in path
-          ct2-transformers-converter --help > /dev/null
-        displayName: "Install Dependencies"
+          - script: |
+              set -e
+              echo "📦 Installing benchmark dependencies..."
+              python3 -m pip install ctranslate2 transformers torch sentencepiece psutil
+              
+              # Verify ctranslate2 converter is in path
+              ct2-transformers-converter --help > /dev/null
+            displayName: "Install Dependencies"
 
-      - script: |
-          set -ex
-          sudo apt-get update && sudo apt-get install -y jq
-          
-          cd Docker-Local-Inference
-          
-          # Inject Application Insights connection string into config.json
-          if [ -f "config.json" ]; then
-            jq '.app_insights_connection_string = env.APPINSIGHTS_CONNECTION_STRING' config.json > config.tmp.json
-            mv config.tmp.json config.json
-          else
-            echo '{"app_insights_connection_string": "'$APPINSIGHTS_CONNECTION_STRING'"}' > config.json
-          fi
-        env:
-          APPINSIGHTS_CONNECTION_STRING: $(APPINSIGHTS_CONNECTION_STRING)
-        displayName: "Inject Secrets into config.json"
+          - script: |
+              set -ex
+              sudo apt-get update && sudo apt-get install -y jq
+              
+              cd Docker-Local-Inference
+              
+              # Inject Application Insights connection string into config.json
+              if [ -f "config.json" ]; then
+                jq '.app_insights_connection_string = env.APPINSIGHTS_CONNECTION_STRING' config.json > config.tmp.json
+                mv config.tmp.json config.json
+              else
+                echo '{"app_insights_connection_string": "'$APPINSIGHTS_CONNECTION_STRING'"}' > config.json
+              fi
+            env:
+              APPINSIGHTS_CONNECTION_STRING: $(APPINSIGHTS_CONNECTION_STRING)
+            displayName: "Inject Secrets into config.json"
 
-      - script: |
-          set -e
-          echo "🚀 Starting Benchmark..."
-          cd Docker-Local-Inference
-          # Pass config.json so the script picks up the AzureLogHandler connection string
-          python3 quantization_benchmark.py config.json
-        displayName: "Run Quantization Script"
+          - script: |
+              set -e
+              echo "🚀 Starting Benchmark..."
+              cd Docker-Local-Inference
+              # Pass config.json so the script picks up the AzureLogHandler connection string
+              python3 quantization_benchmark.py config.json
+            displayName: "Run Quantization Script"
 
-      - task: PublishBuildArtifacts@1
-        displayName: "📊 Publish Benchmark Results"
-        condition: always()
-        inputs:
-          PathtoPublish: 'Docker-Local-Inference/quantization_benchmark_results'
-          ArtifactName: 'QuantizationResults'
-          publishLocation: 'Container'
+          - task: PublishBuildArtifacts@1
+            displayName: "📊 Publish Benchmark Results"
+            condition: always()
+            inputs:
+              PathtoPublish: 'Docker-Local-Inference/quantization_benchmark_results'
+              ArtifactName: 'QuantizationResults'
+              publishLocation: 'Container'
 
-      - script: |
-          echo "🧹 Cleaning up converted models to free space..."
-          rm -rf Docker-Local-Inference/quantization_benchmark_results/model_*
-        displayName: "Cleanup Large Files"
+          - script: |
+              echo "🧹 Cleaning up converted models to free space..."
+              rm -rf Docker-Local-Inference/quantization_benchmark_results/model_*
+            displayName: "Cleanup Large Files"
