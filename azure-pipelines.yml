@@ -151,8 +151,8 @@ stages:
 
   - stage: Benchmark
     displayName: "🏃 NLLB Quantization Benchmark"
-    dependsOn: [] # Run in parallel or manually
-    condition: eq(variables['Build.Reason'], 'Manual') # Prevent running 45min benchmark on every code push
+    dependsOn: Phase3 # Wait for the ENTIRE translation pipeline to finish first!
+    condition: and(succeededOrFailed(), eq(variables['Build.Reason'], 'Manual')) # Prevent running 45min benchmark on every code push
     jobs:
       - job: RunBenchmark
         pool:
