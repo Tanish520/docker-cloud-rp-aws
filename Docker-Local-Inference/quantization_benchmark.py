@@ -175,7 +175,7 @@ def convert_model(quantization, output_dir):
         return False, 0
 
 
-def run_inference_benchmark(model_path, compute_type, device):
+def run_benchmark_inference(model_path, reference_sentences, compute_type, device):
     """Run inference benchmark and collect metrics"""
     try:
         import ctranslate2
