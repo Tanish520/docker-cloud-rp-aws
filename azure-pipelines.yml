@@ -178,6 +178,7 @@ stages:
           - script: |
               set -e
               echo "📦 Installing benchmark dependencies..."
+              python3 -m pip install --upgrade pip setuptools wheel
               python3 -m pip install ctranslate2 transformers torch sentencepiece psutil opencensus-ext-azure sacrebleu unbabel-comet
               
               # Verify ctranslate2 converter is in path
