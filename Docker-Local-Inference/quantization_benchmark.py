@@ -69,30 +69,6 @@ def load_flores_dataset(max_sentences=1000):
         reference_sentences = [line.strip() for line in f_spa.readlines()][:max_sentences]
         
     return source_sentences, reference_sentences
-    """Dynamically load real localization strings from the source-folder."""
-    sentences = []
-    # The pipeline runs from the root, so source-folder is at ../source-folder or ./source-folder
-    source_dir = Path("source-folder")
-    if not source_dir.exists():
-        source_dir = Path("../source-folder")
-        
-    if source_dir.exists():
-        for resx_file in source_dir.glob("*.resx"):
-            try:
-                tree = ET.parse(resx_file)
-                root = tree.getroot()
-                for data in root.findall("data"):
-                    value = data.find("value")
-                    if value is not None and value.text:
-                        text = value.text.strip()
-                        if text:
-                            sentences.append(text)
-                        if len(sentences) >= max_sentences:
-                            return sentences
-            except Exception as e:
-                pass
-                
-    return sentences
 
 MODEL_NAME = "facebook/nllb-200-distilled-600M"
 TARGET_LANG = "es-ES"  # Spanish
@@ -297,8 +273,8 @@ def run_benchmark_inference(model_path, reference_sentences, compute_type, devic
                 from comet import download_model, load_from_checkpoint
                 print("🚀 Loading COMET model for semantic evaluation...")
                 # Download model once, it caches locally
-                model_path = download_model("Unbabel/wmt22-comet-da")
-                comet_model = load_from_checkpoint(model_path)
+                comet_model_path = download_model("Unbabel/wmt22-comet-da")
+                comet_model = load_from_checkpoint(comet_model_path)
                 comet_data = [{"src": src, "mt": mt, "ref": ref} for src, mt, ref in zip(valid_srcs, valid_hyps, valid_refs)]
                 comet_output = comet_model.predict(comet_data, batch_size=8, gpus=0)
                 summary["comet_score"] = round(comet_output.system_score, 4)
