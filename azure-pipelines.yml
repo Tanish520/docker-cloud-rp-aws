@@ -1,153 +1,153 @@
 trigger: none
 stages:
-  - stage: Phase1
-    displayName: "1️⃣ Extract & Upload"
-    jobs:
-      - job: Extract
-        pool:
-          vmImage: ubuntu-latest
-        steps:
-          - checkout: self
+  # - stage: Phase1
+  #   displayName: "1️⃣ Extract & Upload"
+  #   jobs:
+  #     - job: Extract
+  #       pool:
+  #         vmImage: ubuntu-latest
+  #       steps:
+  #         - checkout: self
 
-          # 🔐 Inject secrets into config.json
-          - script: |
-              set -ex
-              sudo apt-get update && sudo apt-get install -y jq
-              jq '.blob_connection_string = env.AZURE_STORAGE_CONN |
-                  .sql_conn_str = env.AZURE_SQL_CONN |
-                  .hf_api_token = env.HUGGINGFACE_TOKEN' config.json > config.tmp.json
-              mv config.tmp.json config.json
-            env:
-              AZURE_STORAGE_CONN: $(AZURE_STORAGE_CONN)
-              AZURE_SQL_CONN: $(AZURE_SQL_CONN)
-              HUGGINGFACE_TOKEN: $(HUGGINGFACE_TOKEN)
-              GITHUB_PAT: $(GITHUB_PAT)
-            displayName: "Inject secrets into config.json"
+  #         # 🔐 Inject secrets into config.json
+  #         - script: |
+  #             set -ex
+  #             sudo apt-get update && sudo apt-get install -y jq
+  #             jq '.blob_connection_string = env.AZURE_STORAGE_CONN |
+  #                 .sql_conn_str = env.AZURE_SQL_CONN |
+  #                 .hf_api_token = env.HUGGINGFACE_TOKEN' config.json > config.tmp.json
+  #             mv config.tmp.json config.json
+  #           env:
+  #             AZURE_STORAGE_CONN: $(AZURE_STORAGE_CONN)
+  #             AZURE_SQL_CONN: $(AZURE_SQL_CONN)
+  #             HUGGINGFACE_TOKEN: $(HUGGINGFACE_TOKEN)
+  #             GITHUB_PAT: $(GITHUB_PAT)
+  #           displayName: "Inject secrets into config.json"
 
-          - script: |
-              set -e
-              python3 -m pip install azure-storage-blob
-              echo "🚀 Starting Phase1 extraction..."
-              python3 phase1.py config.json 2>&1 | tee phase1.log
-              echo "✅ Phase1 completed. Full log saved to phase1.log"
-            workingDirectory: 'API_based_HFace_AppInsight'
-            displayName: "Run Phase1"
+  #         - script: |
+  #             set -e
+  #             python3 -m pip install azure-storage-blob
+  #             echo "🚀 Starting Phase1 extraction..."
+  #             python3 phase1.py config.json 2>&1 | tee phase1.log
+  #             echo "✅ Phase1 completed. Full log saved to phase1.log"
+  #           workingDirectory: 'API_based_HFace_AppInsight'
+  #           displayName: "Run Phase1"
 
-  - stage: Phase2
-    displayName: "2️⃣ Translate (Docker + Local NLLB-CT2)"
-    dependsOn: Phase1
-    condition: succeeded()
-    jobs:
-      - job: Translate
-        pool:
-          vmImage: ubuntu-latest
-        steps:
-          - checkout: self
+  # - stage: Phase2
+  #   displayName: "2️⃣ Translate (Docker + Local NLLB-CT2)"
+  #   dependsOn: Phase1
+  #   condition: succeeded()
+  #   jobs:
+  #     - job: Translate
+  #       pool:
+  #         vmImage: ubuntu-latest
+  #       steps:
+  #         - checkout: self
 
-          # Inject secrets into config.json
-          - script: |
-              set -ex
-              sudo apt-get update && sudo apt-get install -y jq
-              jq '.blob_connection_string = env.AZURE_STORAGE_CONN |
-                  .sql_conn_str = env.AZURE_SQL_CONN |
-                  .app_insights_connection_string = env.APPINSIGHTS_CONNECTION_STRING' config.json > config.tmp.json
-              mv config.tmp.json config.json
-            env:
-              AZURE_STORAGE_CONN: $(AZURE_STORAGE_CONN)
-              AZURE_SQL_CONN: $(AZURE_SQL_CONN)
-              APPINSIGHTS_CONNECTION_STRING: $(APPINSIGHTS_CONNECTION_STRING)
-              GITHUB_PAT: $(GITHUB_PAT)
-            workingDirectory: 'Docker-Local-Inference' 
-            displayName: "Inject secrets into config.json"
+  #         # Inject secrets into config.json
+  #         - script: |
+  #             set -ex
+  #             sudo apt-get update && sudo apt-get install -y jq
+  #             jq '.blob_connection_string = env.AZURE_STORAGE_CONN |
+  #                 .sql_conn_str = env.AZURE_SQL_CONN |
+  #                 .app_insights_connection_string = env.APPINSIGHTS_CONNECTION_STRING' config.json > config.tmp.json
+  #             mv config.tmp.json config.json
+  #           env:
+  #             AZURE_STORAGE_CONN: $(AZURE_STORAGE_CONN)
+  #             AZURE_SQL_CONN: $(AZURE_SQL_CONN)
+  #             APPINSIGHTS_CONNECTION_STRING: $(APPINSIGHTS_CONNECTION_STRING)
+  #             GITHUB_PAT: $(GITHUB_PAT)
+  #           workingDirectory: 'Docker-Local-Inference' 
+  #           displayName: "Inject secrets into config.json"
 
-          # 📦 NEW: Check Azure Pipeline Cache for the Optimized Model
-          - task: Cache@2
-            inputs:
-              key: 'nllb-ct2-model-v1 | "$(Agent.OS)"'
-              path: '$(System.DefaultWorkingDirectory)/Docker-Local-Inference/nllb_ct2'
-              cacheHitVar: MODEL_CACHE_RESTORED
-            displayName: "📦 Restore CTranslate2 Model from Cache"
+  #         # 📦 NEW: Check Azure Pipeline Cache for the Optimized Model
+  #         - task: Cache@2
+  #           inputs:
+  #             key: 'nllb-ct2-model-v1 | "$(Agent.OS)"'
+  #             path: '$(System.DefaultWorkingDirectory)/Docker-Local-Inference/nllb_ct2'
+  #             cacheHitVar: MODEL_CACHE_RESTORED
+  #           displayName: "📦 Restore CTranslate2 Model from Cache"
 
-          # ⚙️ NEW: Download & Convert (Runs ONLY if the cache was missed)
-          - script: |
-              set -e
-              echo "🚀 Model not found in cache. Downloading and converting NLLB-200..."
-              pip install ctranslate2 transformers torch sentencepiece
-              ct2-transformers-converter --model facebook/nllb-200-distilled-600M --output_dir nllb_ct2 --quantization int8
-              # 🧹 CRITICAL CLEANUP: Free up 5GB of disk space so the agent doesn't crash!
-              echo "🧹 Cleaning up heavy raw model and PyTorch..."
-              pip uninstall -y torch
-              rm -rf ~/.cache/huggingface
-              echo "✅ Conversion complete."
-            workingDirectory: 'Docker-Local-Inference'
-            condition: ne(variables.MODEL_CACHE_RESTORED, 'true')
-            displayName: "⚙️ Download & Convert NLLB (If Cache Miss)"
+  #         # ⚙️ NEW: Download & Convert (Runs ONLY if the cache was missed)
+  #         - script: |
+  #             set -e
+  #             echo "🚀 Model not found in cache. Downloading and converting NLLB-200..."
+  #             pip install ctranslate2 transformers torch sentencepiece
+  #             ct2-transformers-converter --model facebook/nllb-200-distilled-600M --output_dir nllb_ct2 --quantization int8
+  #             # 🧹 CRITICAL CLEANUP: Free up 5GB of disk space so the agent doesn't crash!
+  #             echo "🧹 Cleaning up heavy raw model and PyTorch..."
+  #             pip uninstall -y torch
+  #             rm -rf ~/.cache/huggingface
+  #             echo "✅ Conversion complete."
+  #           workingDirectory: 'Docker-Local-Inference'
+  #           condition: ne(variables.MODEL_CACHE_RESTORED, 'true')
+  #           displayName: "⚙️ Download & Convert NLLB (If Cache Miss)"
 
-          # Build the Docker Image
-          - script: |
-              set -e
-              echo "🚀 Building Docker Image (Using Cached NLLB)..."
-              docker build -t local-ai-translator .
-            workingDirectory: 'Docker-Local-Inference' 
-            displayName: "Build Docker Image"
+  #         # Build the Docker Image
+  #         - script: |
+  #             set -e
+  #             echo "🚀 Building Docker Image (Using Cached NLLB)..."
+  #             docker build -t local-ai-translator .
+  #           workingDirectory: 'Docker-Local-Inference' 
+  #           displayName: "Build Docker Image"
 
-          # Run the Docker Image
-          - script: |
-              set -e
-              echo "🚀 Running Translation inside Docker..."
-              docker run -v $(pwd):/app local-ai-translator python translation.py config.json 2>&1 | tee phase2.log
-              echo "✅ Phase2 completed. Full log saved to phase2.log"
+  #         # Run the Docker Image
+  #         - script: |
+  #             set -e
+  #             echo "🚀 Running Translation inside Docker..."
+  #             docker run -v $(pwd):/app local-ai-translator python translation.py config.json 2>&1 | tee phase2.log
+  #             echo "✅ Phase2 completed. Full log saved to phase2.log"
               
-              # 🔥 CLEANUP: Revert config.json so secrets aren't tracked by Git!
-              git checkout -- config.json || true
-            workingDirectory: 'Docker-Local-Inference'
-            displayName: "Run Phase2 (Docker Inference)"
+  #             # 🔥 CLEANUP: Revert config.json so secrets aren't tracked by Git!
+  #             git checkout -- config.json || true
+  #           workingDirectory: 'Docker-Local-Inference'
+  #           displayName: "Run Phase2 (Docker Inference)"
 
-  - stage: Phase3
-    displayName: "3️⃣ Integrate, Commit & Push"
-    dependsOn: Phase2
-    condition: succeeded()
-    jobs:
-      - job: Integrate
-        pool:
-          vmImage: ubuntu-latest
-        steps:
-          - checkout: self
-            persistCredentials: true
+  # - stage: Phase3
+  #   displayName: "3️⃣ Integrate, Commit & Push"
+  #   dependsOn: Phase2
+  #   condition: succeeded()
+  #   jobs:
+  #     - job: Integrate
+  #       pool:
+  #         vmImage: ubuntu-latest
+  #       steps:
+  #         - checkout: self
+  #           persistCredentials: true
 
-          # Inject secrets again
-          - script: |
-              set -ex
-              sudo apt-get update && sudo apt-get install -y jq
-              jq '.blob_connection_string = env.AZURE_STORAGE_CONN |
-                  .sql_conn_str = env.AZURE_SQL_CONN |
-                  .hf_api_token = env.HUGGINGFACE_TOKEN' config.json > config.tmp.json
-              mv config.tmp.json config.json
-            env:
-              AZURE_STORAGE_CONN: $(AZURE_STORAGE_CONN)
-              AZURE_SQL_CONN: $(AZURE_SQL_CONN)
-              HUGGINGFACE_TOKEN: $(HUGGINGFACE_TOKEN)
-              GITHUB_PAT: $(GITHUB_PAT)
-            workingDirectory: 'API_based_HFace_AppInsight'
-            displayName: "Inject secrets into config.json"
+  #         # Inject secrets again
+  #         - script: |
+  #             set -ex
+  #             sudo apt-get update && sudo apt-get install -y jq
+  #             jq '.blob_connection_string = env.AZURE_STORAGE_CONN |
+  #                 .sql_conn_str = env.AZURE_SQL_CONN |
+  #                 .hf_api_token = env.HUGGINGFACE_TOKEN' config.json > config.tmp.json
+  #             mv config.tmp.json config.json
+  #           env:
+  #             AZURE_STORAGE_CONN: $(AZURE_STORAGE_CONN)
+  #             AZURE_SQL_CONN: $(AZURE_SQL_CONN)
+  #             HUGGINGFACE_TOKEN: $(HUGGINGFACE_TOKEN)
+  #             GITHUB_PAT: $(GITHUB_PAT)
+  #           workingDirectory: 'API_based_HFace_AppInsight'
+  #           displayName: "Inject secrets into config.json"
 
-          - script: |
-              set -e
-              python3 -m pip install azure-storage-blob
-              echo "🚀 Starting Phase3 integration..."
-              python3 phase3.py config.json 2>&1 | tee phase3.log
-              echo "✅ Phase3 completed. Full log saved to phase3.log"
-            workingDirectory: 'API_based_HFace_AppInsight'
-            displayName: "Run Phase3"
+  #         - script: |
+  #             set -e
+  #             python3 -m pip install azure-storage-blob
+  #             echo "🚀 Starting Phase3 integration..."
+  #             python3 phase3.py config.json 2>&1 | tee phase3.log
+  #             echo "✅ Phase3 completed. Full log saved to phase3.log"
+  #           workingDirectory: 'API_based_HFace_AppInsight'
+  #           displayName: "Run Phase3"
 
-          # Commit localized resx back to repo
-          - script: |
-              set -e
-              git config user.email "buildagent@yourorg.com"
-              git config user.name  "Azure Pipelines"
+  #         # Commit localized resx back to repo
+  #         - script: |
+  #             set -e
+  #             git config user.email "buildagent@yourorg.com"
+  #             git config user.name  "Azure Pipelines"
               
-            workingDirectory: 'API_based_HFace_AppInsight'
-            displayName: "🔄 Commit & Push localized .resx"
+  #           workingDirectory: 'API_based_HFace_AppInsight'
+  #           displayName: "🔄 Commit & Push localized .resx"
 
   - stage: Benchmark
     displayName: "🏃 NLLB Quantization Benchmark"
