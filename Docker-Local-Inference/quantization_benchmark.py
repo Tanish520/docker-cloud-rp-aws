@@ -14,6 +14,8 @@ import psutil
 import shutil
 import subprocess
 from pathlib import Path
+import urllib.request
+import tarfile
 import xml.etree.ElementTree as ET
 
 try:
@@ -24,11 +26,7 @@ except ImportError:
 # Quantization methods to test
 QUANTIZATION_METHODS = [
     {"name": "float32", "compute_type": "float32", "requires_gpu": False},
-    {"name": "float16", "compute_type": "float16", "requires_gpu": True},
-    {"name": "int16", "compute_type": "int16", "requires_gpu": False},
     {"name": "int8", "compute_type": "int8", "requires_gpu": False},
-    {"name": "int8_float16", "compute_type": "int8_float16", "requires_gpu": True},
-    {"name": "int8_bfloat16", "compute_type": "int8_bfloat16", "requires_gpu": True},
 ]
 
 # Fallback test sentences
@@ -44,8 +42,33 @@ TEST_SENTENCES = [
     "Delete this item permanently?",
     "Connection timeout. Please try again.",
 ]
+REFERENCE_SENTENCES = [] # Empty by default unless using FLORES
 
-def load_real_sentences(max_sentences=1000):
+def load_flores_dataset(max_sentences=1000):
+    """Download FLORES-200 and load the eng_Latn -> spa_Latn split"""
+    flores_dir = Path("flores200_dataset")
+    if not flores_dir.exists():
+        url = "https://dl.fbaipublicfiles.com/nllb/flores200_dataset.tar.gz"
+        print(f"📦 Downloading FLORES-200 from {url}...")
+        try:
+            urllib.request.urlretrieve(url, "flores200_dataset.tar.gz")
+            with tarfile.open("flores200_dataset.tar.gz", "r:gz") as tar:
+                tar.extractall()
+        except Exception as e:
+            print(f"⚠️ Failed to download FLORES: {e}")
+            return [], []
+            
+    eng_file = flores_dir / "dev" / "eng_Latn.dev"
+    spa_file = flores_dir / "dev" / "spa_Latn.dev"
+    
+    if not eng_file.exists() or not spa_file.exists():
+        return [], []
+        
+    with open(eng_file, "r") as f_eng, open(spa_file, "r") as f_spa:
+        source_sentences = [line.strip() for line in f_eng.readlines()][:max_sentences]
+        reference_sentences = [line.strip() for line in f_spa.readlines()][:max_sentences]
+        
+    return source_sentences, reference_sentences
     """Dynamically load real localization strings from the source-folder."""
     sentences = []
     # The pipeline runs from the root, so source-folder is at ../source-folder or ./source-folder
@@ -246,7 +269,42 @@ def run_inference_benchmark(model_path, compute_type, device):
             "tokens_per_second": results["total_tokens"] / (sum(valid_latencies) / 1000),
             "successful_translations": len(valid_latencies),
             "failed_translations": len(TEST_SENTENCES) - len(valid_latencies),
+            "bleu_score": 0.0,
+            "chrf_score": 0.0,
+            "comet_score": 0.0,
         }
+        
+        # Calculate evaluation metrics if references are provided
+        if reference_sentences and len(valid_latencies) > 0:
+            print("📊 Calculating translation quality metrics (BLEU, chrF, COMET)...")
+            import sacrebleu
+            
+            valid_refs = []
+            valid_hyps = []
+            valid_srcs = []
+            for i, hyp in enumerate(results["translations"]):
+                if hyp is not None:
+                    valid_hyps.append(hyp)
+                    valid_refs.append(reference_sentences[i])
+                    valid_srcs.append(TEST_SENTENCES[i])
+                    
+            bleu = sacrebleu.corpus_bleu(valid_hyps, [valid_refs])
+            chrf = sacrebleu.corpus_chrf(valid_hyps, [valid_refs])
+            summary["bleu_score"] = round(bleu.score, 2)
+            summary["chrf_score"] = round(chrf.score, 2)
+            
+            try:
+                from comet import download_model, load_from_checkpoint
+                print("🚀 Loading COMET model for semantic evaluation...")
+                # Download model once, it caches locally
+                model_path = download_model("Unbabel/wmt22-comet-da")
+                comet_model = load_from_checkpoint(model_path)
+                comet_data = [{"src": src, "mt": mt, "ref": ref} for src, mt, ref in zip(valid_srcs, valid_hyps, valid_refs)]
+                comet_output = comet_model.predict(comet_data, batch_size=8, gpus=0)
+                summary["comet_score"] = round(comet_output.system_score, 4)
+            except Exception as e:
+                print(f"⚠️ COMET evaluation failed (could be out of memory): {e}")
+
         return summary
     else:
         return None
@@ -264,13 +322,14 @@ def main():
             
     logger, az_handler = setup_logging(config)
     
-    global TEST_SENTENCES
-    real_sentences = load_real_sentences(1000)
-    if real_sentences:
-        TEST_SENTENCES = real_sentences
-        logger.info(f"📚 Loaded {len(TEST_SENTENCES)} real sentences from source-folder for stress testing.")
+    global TEST_SENTENCES, REFERENCE_SENTENCES
+    sources, refs = load_flores_dataset(200)
+    if sources and refs:
+        TEST_SENTENCES = sources
+        REFERENCE_SENTENCES = refs
+        logger.info(f"📚 Loaded {len(TEST_SENTENCES)} real sentences from FLORES-200 benchmark.")
     else:
-        logger.warning("⚠️ source-folder not found or empty. Falling back to 10 hardcoded sentences.")
+        logger.warning("⚠️ FLORES-200 download failed. Falling back to 10 hardcoded sentences (Metrics disabled).")
 
     print("╔═══════════════════════════════════════════════════════════════╗")
     print("║   NLLB-200 Quantization Benchmark - CTranslate2              ║")
@@ -329,7 +388,7 @@ def main():
         
         # Run benchmark
         device = "cuda" if (requires_gpu and gpu_available) else "cpu"
-        benchmark_results = run_inference_benchmark(str(model_dir), compute_type, device)
+        benchmark_results = run_benchmark_inference(str(model_dir), REFERENCE_SENTENCES, compute_type, device)
         
         if benchmark_results:
             result_entry = {
@@ -345,48 +404,33 @@ def main():
             print(f"✅ Benchmark complete")
             
             # Emit telemetry for Application Insights
+            # App Insights RESEARCH_DATA Payload format
             metrics_payload = {
                 "run_invocation_id": str(uuid.uuid4()), 
                 "file_name": f"benchmark_{quantization}.xlf",
                 "target_lang": TARGET_LANG,
                 "throughput_seg_per_hr": int(benchmark_results["throughput_sentences_per_sec"] * 3600),
                 "throughput_input_tokens_per_hr": round(benchmark_results["tokens_per_second"] * 3600, 2),
-                "total_api_call_logically": len(TEST_SENTENCES), 
-                "actual_api_call": len(TEST_SENTENCES),    
+                "total_api_call_logically": len(TEST_SENTENCES),
+                "actual_api_call": len(TEST_SENTENCES),
+                "api_retries": benchmark_results["failed_translations"],
+                "api_failures": benchmark_results["failed_translations"],
+                "api_throttled_429": 0,
                 "total_segments": len(TEST_SENTENCES),
-                "avg_segment_char_length": round(sum(len(s) for s in TEST_SENTENCES) / len(TEST_SENTENCES), 2),
-                "text_expansion_ratio": 1.2, # Approximation for translation expansion
-                "tokens_processed_in_whole_language": benchmark_results["total_tokens"] * 2, # Approximation (input + output)
-                "total_input_tokens_source": benchmark_results["total_tokens"],
-                "total_output_tokens_target": benchmark_results["total_tokens"] * 1.2,
-                "avg_input_tokens_per_batch": benchmark_results["total_tokens"] / len(TEST_SENTENCES),
-                "avg_output_tokens_per_batch": (benchmark_results["total_tokens"] * 1.2) / len(TEST_SENTENCES),
-                "char_per_token_ratio": 4.0, # Approximation  
-                "total_token_input_plus_output_per_batch": (benchmark_results["total_tokens"] * 2.2) / len(TEST_SENTENCES),
-                "time_per_token": benchmark_results["total_time_ms"] / benchmark_results["total_tokens"] if benchmark_results["total_tokens"] > 0 else 0,
-                "nmt_calls": len(TEST_SENTENCES),
-                "transational_memory_hits": 0,
-                "cache_rate": 0,
+                "total_tokens": benchmark_results["total_tokens"],
                 "total_time": benchmark_results["total_time_ms"],
-                "cold_start_init_ms": conversion_time * 1000, # Using conversion time here
                 "compute_time_ms": benchmark_results["total_time_ms"],
-                "total_sleep_time_ms": 0, 
-                "network_wait_time_ms": 0,
-                "io_bound_pipeline_pct": 0,
-                "hf_api_wait_ms": benchmark_results["total_time_ms"],
-                "azure_sql_query_ms": 0,
-                "azure_sql_commit_ms": 0,
-                "xml_parse_ms": 0,
-                "xml_disk_write_ms": 0,
-                "blob_download_ms": 0, 
-                "blob_upload_ms": 0,
-                "telemetry_overhead_ms": 0,
+                "cold_start_init_ms": conversion_time * 1000,
+                "model_load_ms": 0,
+                "avg_network_latency_ms": 0,
+                "avg_segment_process_ms": benchmark_results["avg_latency_ms"],
+                "avg_translation_ms": benchmark_results["avg_latency_ms"],
                 "cpu_usage_pct": psutil.Process(os.getpid()).cpu_percent(interval=None),
                 "memory_mb": benchmark_results["peak_memory_mb"],
                 "serverless_cost_gb_sec": round((benchmark_results["peak_memory_mb"] / 1024) * (benchmark_results["total_time_ms"] / 1000), 4),
-                "api_retries": 0,
-                "api_failures": benchmark_results["failed_translations"],
-                "api_throttled_429": 0
+                "bleu_score": benchmark_results["bleu_score"],
+                "chrf_score": benchmark_results["chrf_score"],
+                "comet_score": benchmark_results["comet_score"]
             }
             logger.info(f"📊 RESEARCH_DATA: {json.dumps(metrics_payload)}")
             if az_handler:
@@ -400,32 +444,22 @@ def main():
                 "compute_type": compute_type,
                 "status": "benchmark_failed"
             })
+            
+        # Clean up the model directory after testing to free up disk space
+        if model_dir.exists():
+            print(f"🧹 Deleting {model_dir} to free up disk space...")
+            shutil.rmtree(model_dir)
     
     # Save results to JSON
     output_file = results_dir / "benchmark_results.json"
     with open(output_file, "w") as f:
         json.dump(all_results, f, indent=2)
     
-    print(f"\n\n{'='*70}")
+    print("\n\n======================================================================")
     print("BENCHMARK RESULTS SUMMARY")
-    print(f"{'='*70}\n")
+    print("======================================================================\n")
     
     # Print comparison table
-    print(f"{'Method':<15} {'Size(MB)':<12} {'Latency(ms)':<15} {'Throughput':<15} {'Memory(MB)':<12} {'Status':<10}")
-    print("-" * 90)
-    
-    for result in all_results:
-        if result["status"] == "success":
-            print(f"{result['quantization']:<15} "
-                  f"{result['model_size_mb']:<12.1f} "
-                  f"{result['avg_latency_ms']:<15.1f} "
-                  f"{result['throughput_sentences_per_sec']:<15.2f} "
-                  f"{result['peak_memory_mb']:<12.1f} "
-                  f"{result['status']:<10}")
-        else:
-            print(f"{result['quantization']:<15} "
-                  f"{'N/A':<12} "
-                  f"{'N/A':<15} "
                   f"{'N/A':<15} "
                   f"{'N/A':<12} "
                   f"{result['status']:<10}")
