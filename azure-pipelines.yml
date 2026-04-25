@@ -157,7 +157,7 @@ stages:
       - job: RunBenchmark
         pool:
           vmImage: ubuntu-latest
-        timeoutInMinutes: 60
+        timeoutInMinutes: 120
         steps:
           - checkout: self
           
@@ -206,8 +206,8 @@ stages:
               set -e
               echo "🚀 Starting Benchmark..."
               cd Docker-Local-Inference
-              # Pass config.json so the script picks up the AzureLogHandler connection string
-              python3 quantization_benchmark.py config.json
+              # -u = unbuffered stdout so Azure DevOps shows logs in real-time
+              python3 -u quantization_benchmark.py config.json
             displayName: "Run Quantization Script"
 
           - task: PublishBuildArtifacts@1

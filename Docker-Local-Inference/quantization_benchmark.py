@@ -25,7 +25,7 @@ except ImportError:
 
 # Quantization methods to test
 QUANTIZATION_METHODS = [
-    {"name": "float32", "compute_type": "float32", "requires_gpu": False},
+    # {"name": "float32", "compute_type": "float32", "requires_gpu": False},  # Already benchmarked
     {"name": "int8", "compute_type": "int8", "requires_gpu": False},
 ]
 
