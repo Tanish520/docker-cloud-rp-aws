@@ -166,7 +166,7 @@ stages:
               sudo rm -rf /usr/share/dotnet
               sudo rm -rf /opt/ghc
               sudo rm -rf "/usr/local/share/boost"
-              sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+              sudo rm -rf /usr/local/lib/android
               df -h
             displayName: "Free Disk Space"
 
@@ -178,7 +178,7 @@ stages:
           - script: |
               set -e
               echo "📦 Installing benchmark dependencies..."
-              python3 -m pip install --upgrade pip setuptools wheel
+              python3 -m pip install "pip<24.1" "setuptools<70.0.0" wheel
               python3 -m pip install ctranslate2 transformers torch sentencepiece psutil opencensus-ext-azure sacrebleu unbabel-comet
               
               # Verify ctranslate2 converter is in path
