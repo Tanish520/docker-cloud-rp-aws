@@ -14,6 +14,7 @@ import psutil
 import shutil
 import subprocess
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 try:
     from opencensus.ext.azure.log_exporter import AzureLogHandler
@@ -30,7 +31,7 @@ QUANTIZATION_METHODS = [
     {"name": "int8_bfloat16", "compute_type": "int8_bfloat16", "requires_gpu": True},
 ]
 
-# Test sentences (UI strings from actual localization)
+# Fallback test sentences
 TEST_SENTENCES = [
     "Click OK to confirm.",
     "Loading, please wait...",
@@ -43,6 +44,32 @@ TEST_SENTENCES = [
     "Delete this item permanently?",
     "Connection timeout. Please try again.",
 ]
+
+def load_real_sentences(max_sentences=1000):
+    """Dynamically load real localization strings from the source-folder."""
+    sentences = []
+    # The pipeline runs from the root, so source-folder is at ../source-folder or ./source-folder
+    source_dir = Path("source-folder")
+    if not source_dir.exists():
+        source_dir = Path("../source-folder")
+        
+    if source_dir.exists():
+        for resx_file in source_dir.glob("*.resx"):
+            try:
+                tree = ET.parse(resx_file)
+                root = tree.getroot()
+                for data in root.findall("data"):
+                    value = data.find("value")
+                    if value is not None and value.text:
+                        text = value.text.strip()
+                        if text:
+                            sentences.append(text)
+                        if len(sentences) >= max_sentences:
+                            return sentences
+            except Exception as e:
+                pass
+                
+    return sentences
 
 MODEL_NAME = "facebook/nllb-200-distilled-600M"
 TARGET_LANG = "es-ES"  # Spanish
@@ -237,6 +264,14 @@ def main():
             
     logger, az_handler = setup_logging(config)
     
+    global TEST_SENTENCES
+    real_sentences = load_real_sentences(1000)
+    if real_sentences:
+        TEST_SENTENCES = real_sentences
+        logger.info(f"📚 Loaded {len(TEST_SENTENCES)} real sentences from source-folder for stress testing.")
+    else:
+        logger.warning("⚠️ source-folder not found or empty. Falling back to 10 hardcoded sentences.")
+
     print("╔═══════════════════════════════════════════════════════════════╗")
     print("║   NLLB-200 Quantization Benchmark - CTranslate2              ║")
     print("╚═══════════════════════════════════════════════════════════════╝\n")
