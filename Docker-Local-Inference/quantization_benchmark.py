@@ -459,11 +459,13 @@ def main():
     print("BENCHMARK RESULTS SUMMARY")
     print("======================================================================\n")
     
-    # Print comparison table
-                  f"{'N/A':<15} "
-                  f"{'N/A':<12} "
-                  f"{result['status']:<10}")
-    
+    print(f"{'Method':<15} {'Size(MB)':<12} {'Latency(ms)':<15} {'Throughput':<15} {'Memory(MB)':<12} {'BLEU':<6} {'COMET':<8} {'Status'}")
+    print("-" * 100)
+    for r in all_results:
+        if r["status"] == "success":
+            print(f"{r['quantization']:<15} {r['model_size_mb']:<12.1f} {r['total_time_ms']:<15.1f} {r['throughput_sentences_per_sec']:<15.2f} {r['peak_memory_mb']:<12.1f} {r.get('bleu_score', 0):<6.1f} {r.get('comet_score', 0):<8.4f} {r['status']}")
+        else:
+            print(f"{r['quantization']:<15} {'N/A':<12} {'N/A':<15} {'N/A':<15} {'N/A':<12} {'N/A':<6} {'N/A':<8} {r['status']}")
     print(f"\n✅ Full results saved to: {output_file}")
     print(f"📊 Test sentences: {len(TEST_SENTENCES)}")
     print(f"🎯 Target language: {TARGET_LANG}")
