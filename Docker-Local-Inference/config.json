@@ -1,6 +1,6 @@
 {
-  "blob_connection_string": "DefaultEndpointsProtocol=https;AccountName=localizationcloud123;AccountKey=6CySmWMIPxaP2kgT/gOBONJvkEIFKzXbt4EvQyKBSPYhlwNpNgXxv439PUtYJh58AqlhSwNaSihY+AStcGNqmQ==;EndpointSuffix=core.windows.net",
-  "sql_conn_str": "DRIVER={ODBC Driver 18 for SQL Server};SERVER=tcp:localization-server123.database.windows.net,1433;DATABASE=free-sql-db-2239011;Persist Security Info=False;UID=dbadmin;PWD={cloud@1234};MultipleActiveResultSets=False;Encrypt=yes;TrustServerCertificate=yes;Connection Timeout=30;",
+  "blob_connection_string": "",
+  "sql_conn_str": "",
   "app_insights_connection_string": "InstrumentationKey=d32b359d-5628-4eda-8649-d498f5255ccb;IngestionEndpoint=https://eastasia-0.in.applicationinsights.azure.com/;LiveEndpoint=https://eastasia.livediagnostics.monitor.azure.com/;ApplicationId=8ea5ec9d-9e6b-4457-b1db-b60f740a9743",
   "SourceRepoPath": "source-folder",
   "TargetLanguages": [
@@ -17,6 +17,6 @@
   "hf_models": {
     "default": "facebook/nllb-200-distilled-600M"
   },
-  "hf_api_token": "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",
+  "hf_api_token": "",
   "TargetResxPath": "target-folder"
 }
