@@ -3781,3 +3781,31 @@ aws cloudformation describe-stacks --region ap-south-1 --stack-name cloud-loc 2>
 aws rds describe-db-instances --region ap-south-1 --query "DBInstances[?DBInstanceIdentifier=='cloud-loc-tm']" --output text
 ```
 Expected: `✅ Stack deleted.`, `stack gone`, and empty output from the RDS query (success criterion 4).
+
+---
+
+## Addendum (2026-10-16): EC2 runner tasks
+
+Design: spec §17, approved by the user in chat. These tasks are executed immediately by the same session, so they list files, interfaces and tests rather than full code. Each task is still test-first.
+
+### Task 14: Runner infrastructure in `aws/infra/pipeline.yaml`
+- **Add:** parameter `RunnerInstanceType` (default `m5.large`); `RunnerLogGroup` (`/${ProjectName}/ec2-runner`, 90 days); `RunnerSecurityGroup`; a second ingress rule on `DbSecurityGroup` from `RunnerSecurityGroup` on 1433; `RunnerRole` (ec2 trust, `AmazonSSMManagedInstanceCore`, data-bucket object and list access including `s3:AbortMultipartUpload`, `secretsmanager:GetSecretValue` on the DB secret, `logs:CreateLogStream`/`PutLogEvents`/`DescribeLogStreams` on the runner log group); `RunnerInstanceProfile`; `RunnerLaunchTemplate`.
+- **Launch template settings:** AL2023 AMI via `{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}`, 40 GB gp3, `HttpTokens: required`, `HttpPutResponseHopLimit: 2`, `InstanceInitiatedShutdownBehavior: terminate`, user data (safety `shutdown -h +240`, install Docker and python3-pip, `/opt/venv` with boto3), tags.
+- **Outputs:** `RunnerLaunchTemplateId`, `RunnerLogGroupName`.
+- **Tests:** in `tests/test_pipeline_template.py`; `cfn-lint` passes.
+
+### Task 15: `aws/runner/run_all.sh`
+- **Inputs (env):** `RUN_ID`, `BUCKET`, `DB_HOST`, `DB_SECRET_ARN`, optional `RESET_TM`, `PHASE2_CPUSET`, `DB_NAME`.
+- **Behaviour:** prepends `/opt/venv/bin` to PATH when present; exports `DB_USER`/`DB_PASSWORD` from the secret JSON and `MODEL_KEY` from `buildspecs/phase2.yml`; runs Phase 1 → `scripts/run_phase2.sh` → Phase 3 under `set -euo pipefail`.
+- **Tests:** `tests/test_run_all.py`, using stand-in `aws`, `phase1.py`, `run_phase2.sh` and `phase3.py`. They check phase order, credentials and MODEL_KEY reaching Phase 2 (password with special characters), that a Phase 1 failure stops the run, and that missing settings fail.
+
+### Task 16: `aws/infra/run_on_ec2.sh`
+- **Behaviour:** reads stack outputs; warns when the working tree has uncommitted changes; uploads `git archive HEAD`; runs `run-instances` from the launch template; waits for the instance and its SSM registration; runs `send-command` (`AWS-RunShellScript`, CloudWatch output on, 2 h execution timeout); polls the invocation; prints the run ID and status; terminates the instance on exit (trap). It exits non-zero unless the command succeeded. `RUNNER_POLL_SECONDS` sets the poll interval.
+- **Tests:** `tests/test_run_on_ec2.py`, using stand-in `aws` and `git`. They check that the source is uploaded to the run folder, that SSM output goes to the runner log group, that the instance is terminated after both success and failure, and the exit codes.
+
+### Task 17: Telemetry parsing and docs
+- `export_telemetry.collect` parses `RESEARCH_DATA` from every line of an event. Test: one event holding two lines with two payloads.
+- `aws/README.md` gets a "Running on EC2 (without CodeBuild)" section. The docs test checks it mentions `run_on_ec2.sh` and `/cloud-loc/ec2-runner`.
+
+### Task 18: Live EC2 run
+Deploy the stack update, run `run_on_ec2.sh` with `RESET_TM=true`, verify success criterion 1 using the runner log group, and export the CSV.

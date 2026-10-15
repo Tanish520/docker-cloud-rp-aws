@@ -296,3 +296,27 @@ Verify these early, because the design depends on them:
 2. `db.t3.small` with `sqlserver-ex` and `ManageMasterUserPassword` is available in `ap-south-1`.
 3. Updating the stack does not wipe the prefix-list entries that `deploy.sh` manages. If it does, switch to adding the security-group ingress rules from `deploy.sh`.
 4. `ctranslate2==4.7.1`, `transformers==4.38.2` and the CPU `torch` wheel install together on the CodeBuild Python and convert the model successfully.
+
+## 17. Addendum (2026-10-16): EC2 runner
+
+**Why:** the first live run showed CodeBuild refusing every build in this account (`AccountLimitExceededException: Cannot have more than 0 builds in queue for the account`), even a no-op build started directly. This is an account-level restriction that only AWS Support can lift; Service Quotas showed normal values. The user chose to run the pipeline on EC2 instead. The CodeBuild/CodePipeline path stays deployed and unchanged, and will work if AWS lifts the limit.
+
+**Design:**
+- `aws/infra/run_on_ec2.sh` (run locally):
+  1. Uploads `git archive HEAD` to `s3://<data-bucket>/runs/<run-id>/source.tar.gz` (run IDs look like `ec2-20261016t120000z`).
+  2. Launches one instance from the stack's launch template.
+  3. Waits for SSM, then runs `aws/runner/run_all.sh` through SSM Run Command with output sent to the CloudWatch log group `/<project>/ec2-runner`.
+  4. Reports the result and always terminates the instance.
+- `aws/runner/run_all.sh` (on the instance) does what the three buildspecs do:
+  - reads the database credentials from Secrets Manager;
+  - reads `MODEL_KEY` from `aws/buildspecs/phase2.yml`;
+  - runs `phase1.py`, the unchanged `scripts/run_phase2.sh` and `phase3.py`.
+- **Stack additions:**
+  - **Launch template:** Amazon Linux 2023 x86_64 (from the public SSM parameter), default `m5.large` (2 vCPU / 8 GB, Intel Xeon), 40 GB gp3 root volume, IMDSv2 with hop limit 2 so containers can use the instance role, terminate-on-shutdown. User data installs Docker and a Python venv with boto3, and schedules a 4-hour safety shutdown.
+  - **Instance role:** SSM managed core policy, plus the same data-bucket, secret and log permissions as CodeBuild.
+  - **Network:** a runner security group that the database security group accepts.
+  - **Logs:** the runner log group, kept 90 days.
+
+**Fairness:** an m5.large has exactly 2 vCPUs, like the Azure DS2_v2 agent (2 vCPU / 7 GB), so `--cpuset-cpus=0,1` gives the container every core and `host_cpu_count` equals `cpu_limit`. The inference path, image, scripts and telemetry are unchanged. Orchestration (a local script instead of CodePipeline) does not affect the per-file metrics.
+
+**Telemetry:** SSM may batch several output lines into one CloudWatch event, so `export_telemetry.py` parses `RESEARCH_DATA` per line. Run it with `--log-group /cloud-loc/ec2-runner`.
