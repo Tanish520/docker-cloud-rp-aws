@@ -230,7 +230,7 @@ If the user supplies Azure's exact table definition, this one is replaced to mat
 - Cloud services, region, network path and CPU model.
 - The database instance size (Azure SQL free serverless vs RDS `db.t3.small` Express).
 - `telemetry_overhead_ms` excludes the Application Insights exporter's background work. The same OpenCensus views are registered on AWS (without an exporter), so the in-process recording work matches.
-- The converter is pinned on AWS (unpinned on Azure).
+- The converter is pinned on AWS (unpinned on Azure). It uses the image's `ctranslate2==4.7.1`, which sets the model format, with its own `transformers==4.57.6` and `torch==2.14.1+cpu`: ctranslate2 4.7's converter needs transformers >= 4.56. The runtime image keeps transformers 4.38.2, used only for the tokenizer.
 - On AWS, raw files are kept on failure and failures produce a non-zero exit code. Neither affects successful-run timing.
 
 ## 10. Error handling

@@ -40,8 +40,9 @@ convert_model() {
   rm -rf "$MODEL_DIR"
   docker run --rm -v "$TRANSLATOR_DIR:/work" "$BASE_IMAGE" bash -c '
     set -euo pipefail
-    pip install --quiet --no-cache-dir "torch==2.2.2+cpu" --extra-index-url https://download.pytorch.org/whl/cpu
-    pip install --quiet --no-cache-dir "ctranslate2==4.7.1" "transformers==4.38.2" "sentencepiece==0.2.0" "protobuf==4.25.3" "numpy<2.0.0"
+    # ctranslate2 matches the image (it sets the model format); its converter needs transformers >= 4.56.
+    pip install --quiet --no-cache-dir "torch==2.14.1+cpu" --extra-index-url https://download.pytorch.org/whl/cpu
+    pip install --quiet --no-cache-dir "ctranslate2==4.7.1" "transformers==4.57.6" "sentencepiece==0.2.2" "protobuf==7.36.2" "numpy==2.2.6"
     ct2-transformers-converter --model facebook/nllb-200-distilled-600M --output_dir /work/nllb_ct2 --quantization int8
   '
 }

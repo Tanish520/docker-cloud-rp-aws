@@ -40,12 +40,17 @@ def test_phase3_artifact_matches_configured_output_folder():
     assert load("phase3.yml")["artifacts"]["files"] == [f"{config['TargetResxPath']}/**/*"]
 
 
-def test_model_key_and_converter_pins_match_the_image():
-    ct2, transformers = pinned("ctranslate2"), pinned("transformers")
+def test_model_key_and_converter_ctranslate2_match_the_image():
+    # ctranslate2 sets the converted model's format, so the converter must use the image's version.
+    ct2 = pinned("ctranslate2")
     assert load("phase2.yml")["env"]["variables"]["MODEL_KEY"] == f"nllb-200-distilled-600M_int8_ct2-{ct2}"
-    script = RUNNER.read_text(encoding="utf-8")
-    assert f'"ctranslate2=={ct2}"' in script
-    assert f'"transformers=={transformers}"' in script
+    assert f'"ctranslate2=={ct2}"' in RUNNER.read_text(encoding="utf-8")
+
+
+def test_converter_transformers_supports_the_dtype_argument_used_by_ctranslate2():
+    # ctranslate2 4.7's converter calls from_pretrained(..., dtype=...), which needs transformers >= 4.56.
+    version = re.search(r'"transformers==([\d.]+)"', RUNNER.read_text(encoding="utf-8")).group(1)
+    assert tuple(int(part) for part in version.split(".")[:2]) >= (4, 56)
 
 
 def test_translation_runs_on_pinned_cores_with_exit_code_kept():
@@ -73,5 +78,5 @@ def test_converter_takes_cpu_torch_from_the_pytorch_index_and_everything_else_fr
     # --index-url would make the PyTorch index the only source, and some torch dependencies are not
     # installable from it; pin the exact CPU build and add the PyTorch index as an extra source.
     script = RUNNER.read_text(encoding="utf-8")
-    assert '"torch==2.2.2+cpu" --extra-index-url https://download.pytorch.org/whl/cpu' in script
+    assert '"torch==2.14.1+cpu" --extra-index-url https://download.pytorch.org/whl/cpu' in script
     assert "--index-url https://download.pytorch.org" not in script
