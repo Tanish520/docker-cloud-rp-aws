@@ -40,6 +40,7 @@ The command prints a `pipelineExecutionId`; that is the **run ID** used in S3 pa
 - `RESET_TM` (pipeline variable, default `true`) empties the translation memory before Phase 2, so the run starts at a 0% cache rate like the report's runs. To measure cache reuse, keep the memory from earlier runs:
   `aws codepipeline start-pipeline-execution --region ap-south-1 --name cloud-loc-pipeline --variables name=RESET_TM,value=false`
 - The first run converts the model (about 10–15 extra minutes) and caches it in `s3://<data-bucket>/models/`; later runs reuse it.
+- If a stage fails, fix the cause and click **Retry** on that stage in the CodePipeline console. A retry keeps the same run ID and the same pipeline variables. Phase 2 then translates only the languages whose raw files are still in `runs/<run-id>/raw/` (finished ones were removed), and the telemetry export keeps the newest row per file. With `RESET_TM=true` the retry empties the translation memory again, so it still starts from a 0% cache.
 - Watch progress in the CodePipeline console, or:
   `aws codepipeline get-pipeline-execution --region ap-south-1 --pipeline-name cloud-loc-pipeline --pipeline-execution-id <run-id> --query pipelineExecution.status`
 
@@ -48,6 +49,7 @@ The command prints a `pipelineExecutionId`; that is the **run ID** used in S3 pa
 - **Localized files:** `aws s3 ls s3://<data-bucket>/runs/<run-id>/output/ --recursive`, or download the `LocalizedResx` artifact from the pipeline run in the console. `<data-bucket>` is the `DataBucketName` stack output.
 - **Telemetry CSV** (same column names and order as the Azure `RESEARCH_DATA` payload, plus `cloud_provider`, `region`, `run_id`, `cpu_limit`, `cpu_model`):
   `aws/.venv/bin/python aws/tools/export_telemetry.py --run-id <run-id> --out <run-id>.csv`
+  If you deployed with a different `PROJECT_NAME` or region, add `--log-group /<project-name>/codebuild` and `--region <region>`.
 - **Quick look:** CloudWatch → Logs Insights → saved query `cloud-loc/RESEARCH_DATA per file`.
 
 ## Changing the workload

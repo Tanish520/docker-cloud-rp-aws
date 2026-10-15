@@ -26,3 +26,9 @@ def test_aws_readme_says_which_branch_to_deploy_before_merge():
     text = (AWS_DIR / "README.md").read_text(encoding="utf-8")
     assert "merged into `main`" in text
     assert "GITHUB_BRANCH=" in text
+
+
+def test_aws_readme_explains_retry_and_custom_log_group():
+    text = (AWS_DIR / "README.md").read_text(encoding="utf-8")
+    assert "**Retry**" in text and "same run ID" in text
+    assert "--log-group" in text
