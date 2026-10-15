@@ -229,3 +229,15 @@ def test_metric_views_are_registered_without_an_exporter(translation, run_env, s
 
     assert run(translation, run_env) == 0
     assert calls == [None]
+
+
+def test_run_with_no_files_at_all_fails(translation, run_env, s3, monkeypatch):
+    # Nothing to translate and nothing translated: Phase 1 did not run, or RUN_ID is wrong.
+    monkeypatch.setattr(translation, "get_sql_connection", lambda conn_str: (FakeConn(), 0))
+    assert run(translation, run_env) == 1
+
+
+def test_retry_after_full_success_with_nothing_left_passes(translation, run_env, s3, monkeypatch):
+    s3.put_object(Bucket=BUCKET, Key="runs/run-1/translated/resx_file_10.es-ES.xlf", Body=XLF.encode("utf-8"))
+    monkeypatch.setattr(translation, "get_sql_connection", lambda conn_str: (FakeConn(), 0))
+    assert run(translation, run_env) == 0

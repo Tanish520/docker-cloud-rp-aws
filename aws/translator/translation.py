@@ -458,6 +458,10 @@ async def main(config_path):
         
         if not blobs:
             logger.warning(f"⚠️ ZERO files found in '{raw_container_name}'. Are you sure Phase 1 ran?")
+            # An empty raw folder is fine on a retry after full success, but not when nothing was translated either.
+            if not store.list_translated():
+                failures += 1
+                logger.error(f"❌ Run {store.run_id} has no raw or translated files. Did Phase 1 run for this RUN_ID?")
         else:
             logger.info(f"🔎 Found {len(blobs)} files in '{raw_container_name}'.")
 
