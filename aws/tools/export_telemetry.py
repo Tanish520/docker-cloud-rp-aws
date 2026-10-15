@@ -44,9 +44,11 @@ def collect(logs_client, log_group, run_id):
     while True:
         resp = logs_client.filter_log_events(**kwargs)
         for event in resp.get("events", []):
-            payload = parse_research_line(event["message"])
-            if payload and payload.get("run_id") == run_id:
-                latest[(payload.get("file_name"), payload.get("target_lang"))] = payload
+            # CodeBuild logs one line per event; SSM Run Command can batch several lines into one.
+            for text in event["message"].splitlines():
+                payload = parse_research_line(text)
+                if payload and payload.get("run_id") == run_id:
+                    latest[(payload.get("file_name"), payload.get("target_lang"))] = payload
         token = resp.get("nextToken")
         if not token:
             return list(latest.values())

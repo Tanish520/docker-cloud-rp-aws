@@ -32,3 +32,9 @@ def test_aws_readme_explains_retry_and_custom_log_group():
     text = (AWS_DIR / "README.md").read_text(encoding="utf-8")
     assert "**Retry**" in text and "same run ID" in text
     assert "--log-group" in text
+
+
+def test_aws_readme_documents_the_ec2_runner():
+    text = (AWS_DIR / "README.md").read_text(encoding="utf-8")
+    assert "aws/infra/run_on_ec2.sh" in text
+    assert "--log-group /cloud-loc/ec2-runner" in text

@@ -77,3 +77,14 @@ def test_collect_keeps_only_the_latest_row_per_file():
     ]}])
     rows = et.collect(logs, "/cloud-loc/codebuild", "r1")
     assert [(r["file_name"], r["total_time"]) for r in rows] == [("a.de-DE.xlf", 3), ("a.es-ES.xlf", 2)]
+
+
+def test_collect_reads_every_line_of_a_batched_event():
+    # SSM Run Command output can put several output lines into one CloudWatch event.
+    message = "\n".join([
+        line({"run_id": "r1", "file_name": "a.de-DE.xlf", "target_lang": "de-DE"}),
+        "2026-10-16 10:00:01,000 [INFO] Translating a.es-ES.xlf to es-ES...",
+        line({"run_id": "r1", "file_name": "a.es-ES.xlf", "target_lang": "es-ES"}),
+    ])
+    rows = et.collect(FakeLogs([{"events": [{"message": message}]}]), "/cloud-loc/ec2-runner", "r1")
+    assert [r["target_lang"] for r in rows] == ["de-DE", "es-ES"]

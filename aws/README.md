@@ -44,6 +44,24 @@ The command prints a `pipelineExecutionId`; that is the **run ID** used in S3 pa
 - Watch progress in the CodePipeline console, or:
   `aws codepipeline get-pipeline-execution --region ap-south-1 --pipeline-name cloud-loc-pipeline --pipeline-execution-id <run-id> --query pipelineExecution.status`
 
+## Running on EC2 (without CodeBuild)
+
+In this account CodeBuild refuses to start any build (`AccountLimitExceededException: Cannot have more than 0 builds in queue for the account`). That is an account restriction only AWS Support can lift. Until then, run the same three phases on a temporary EC2 machine:
+
+```bash
+bash aws/infra/run_on_ec2.sh                  # add RESET_TM=false in front to keep the translation memory
+```
+
+How it works:
+- It uploads your **last commit** to `s3://<data-bucket>/runs/<run-id>/source.tar.gz`. Uncommitted changes are not included, and no GitHub connection is needed.
+- It starts an m5.large (2 vCPU / 8 GB, like the 2-vCPU Azure agent) from the stack's launch template.
+- It runs `runner/run_all.sh` through SSM: Phase 1, the same `scripts/run_phase2.sh`, then Phase 3.
+- Output streams to the CloudWatch log group `/cloud-loc/ec2-runner`.
+- The machine is terminated when the run ends, and after 4 hours at the latest. It costs about $0.10 per hour while a run is going.
+
+When the run ends, the script prints the exact telemetry command. For EC2 runs it is:
+`aws/.venv/bin/python aws/tools/export_telemetry.py --run-id <run-id> --log-group /cloud-loc/ec2-runner --out <run-id>.csv`
+
 ## Results
 
 - **Localized files:** `aws s3 ls s3://<data-bucket>/runs/<run-id>/output/ --recursive`, or download the `LocalizedResx` artifact from the pipeline run in the console. `<data-bucket>` is the `DataBucketName` stack output.
