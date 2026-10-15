@@ -1,0 +1,456 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  AWS version of the cloud localization pipeline: Phase 1 extract, Phase 2 Docker
+  NLLB/CTranslate2 translate, Phase 3 merge. Started manually; one run per execution.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: cloud-loc
+    AllowedPattern: "^[a-z][a-z0-9-]{2,19}$"
+    Description: Lower-case prefix for resource names (3-20 characters).
+  GitHubRepository:
+    Type: String
+    Default: AayushGupta56/docker-cloud-rp
+    Description: owner/repo of the GitHub repository the pipeline builds.
+  GitHubBranch:
+    Type: String
+    Default: main
+    Description: Branch the pipeline checks out.
+  DBInstanceClass:
+    Type: String
+    Default: db.t3.small
+    Description: RDS instance class for the SQL Server Express translation memory.
+  Phase2CpuSet:
+    Type: String
+    Default: "0,1"
+    Description: Cores the Phase 2 container may use (docker --cpuset-cpus). "0,1" matches the 2-vCPU Azure agent.
+
+Resources:
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-data-${AWS::AccountId}-${AWS::Region}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-run-files
+            Status: Enabled
+            Prefix: runs/
+            ExpirationInDays: 30
+
+  DataBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DataBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt DataBucket.Arn
+              - !Sub "${DataBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-artifacts-${AWS::AccountId}-${AWS::Region}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-pipeline-artifacts
+            Status: Enabled
+            ExpirationInDays: 30
+
+  ArtifactBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ArtifactBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt ArtifactBucket.Arn
+              - !Sub "${ArtifactBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  GitHubConnection:
+    Type: AWS::CodeStarConnections::Connection
+    Properties:
+      ConnectionName: !Sub "${ProjectName}-github"
+      ProviderType: GitHub
+
+  BuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/${ProjectName}/codebuild"
+      RetentionInDays: 90
+
+  ResearchDataQuery:
+    Type: AWS::Logs::QueryDefinition
+    Properties:
+      Name: !Sub "${ProjectName}/RESEARCH_DATA per file"
+      LogGroupNames:
+        - !Ref BuildLogGroup
+      QueryString: |
+        fields @timestamp
+        | filter @message like /RESEARCH_DATA/
+        | parse @message /"run_id": "(?<run_id>[^"]+)"/
+        | parse @message /"target_lang": "(?<target_lang>[^"]+)"/
+        | parse @message /"total_time": (?<total_time_ms>[0-9.]+)/
+        | parse @message /"throughput_seg_per_hr": (?<seg_per_hr>[0-9]+)/
+        | parse @message /"cache_rate": (?<cache_rate>[0-9.]+)/
+        | parse @message /"nmt_calls": (?<nmt_calls>[0-9]+)/
+        | parse @message /"azure_sql_query_ms": (?<sql_query_ms>[0-9.]+)/
+        | parse @message /"blob_download_ms": (?<download_ms>[0-9.]+)/
+        | parse @message /"blob_upload_ms": (?<upload_ms>[0-9.]+)/
+        | display @timestamp, run_id, target_lang, total_time_ms, seg_per_hr, cache_rate, nmt_calls, sql_query_ms, download_ms, upload_ms
+        | sort @timestamp desc
+
+  DbPrefixList:
+    Type: AWS::EC2::PrefixList
+    Properties:
+      PrefixListName: !Sub "${ProjectName}-db-clients"
+      AddressFamily: IPv4
+      MaxEntries: 20
+
+  DbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SQL Server access for CodeBuild IP ranges (and an optional admin CIDR) only
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 1433
+          ToPort: 1433
+          SourcePrefixListId: !Ref DbPrefixList
+          Description: Entries are synced by aws/infra/deploy.sh
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      DBInstanceIdentifier: !Sub "${ProjectName}-tm"
+      Engine: sqlserver-ex
+      LicenseModel: license-included
+      DBInstanceClass: !Ref DBInstanceClass
+      AllocatedStorage: "20"
+      StorageType: gp3
+      MasterUsername: dbadmin
+      ManageMasterUserPassword: true
+      PubliclyAccessible: true
+      MultiAZ: false
+      BackupRetentionPeriod: 0
+      DeletionProtection: false
+      VPCSecurityGroups:
+        - !GetAtt DbSecurityGroup.GroupId
+
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: localization-build
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: WriteBuildLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt BuildLogGroup.Arn
+              - Sid: RunFilesAndModelCache
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub "${DataBucket.Arn}/*"
+              - Sid: ListRunFiles
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt DataBucket.Arn
+              - Sid: PipelineArtifacts
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                Resource: !Sub "${ArtifactBucket.Arn}/*"
+              - Sid: PipelineArtifactBucket
+                Effect: Allow
+                Action:
+                  - s3:GetBucketAcl
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
+                Resource: !GetAtt ArtifactBucket.Arn
+              - Sid: DatabaseSecret
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !GetAtt Database.MasterUserSecret.SecretArn
+
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: localization-pipeline
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Artifacts
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                Resource: !Sub "${ArtifactBucket.Arn}/*"
+              - Sid: ArtifactBucket
+                Effect: Allow
+                Action:
+                  - s3:GetBucketVersioning
+                  - s3:GetBucketAcl
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
+                Resource: !GetAtt ArtifactBucket.Arn
+              - Sid: RunBuilds
+                Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource:
+                  - !GetAtt Phase1Project.Arn
+                  - !GetAtt Phase2Project.Arn
+                  - !GetAtt Phase3Project.Arn
+              - Sid: ReadGitHub
+                Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                  - codeconnections:UseConnection
+                Resource: !Ref GitHubConnection
+
+  Phase1Project:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${ProjectName}-phase1"
+      Description: Phase 1 - convert .resx to XLIFF and upload to S3
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: aws/buildspecs/phase1.yml
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:7.0
+        EnvironmentVariables:
+          - Name: BUCKET
+            Type: PLAINTEXT
+            Value: !Ref DataBucket
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref BuildLogGroup
+          StreamName: phase1
+      TimeoutInMinutes: 30
+
+  Phase2Project:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${ProjectName}-phase2"
+      Description: Phase 2 - translate in Docker with NLLB-200 600M (CTranslate2 INT8)
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: aws/buildspecs/phase2.yml
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: aws/codebuild/standard:7.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: BUCKET
+            Type: PLAINTEXT
+            Value: !Ref DataBucket
+          - Name: DB_HOST
+            Type: PLAINTEXT
+            Value: !GetAtt Database.Endpoint.Address
+          - Name: DB_NAME
+            Type: PLAINTEXT
+            Value: localization
+          - Name: DB_USER
+            Type: SECRETS_MANAGER
+            Value: !Sub "${Database.MasterUserSecret.SecretArn}:username"
+          - Name: DB_PASSWORD
+            Type: SECRETS_MANAGER
+            Value: !Sub "${Database.MasterUserSecret.SecretArn}:password"
+          - Name: PHASE2_CPUSET
+            Type: PLAINTEXT
+            Value: !Ref Phase2CpuSet
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref BuildLogGroup
+          StreamName: phase2
+      TimeoutInMinutes: 120
+
+  Phase3Project:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${ProjectName}-phase3"
+      Description: Phase 3 - merge translated XLIFF into localized .resx
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: aws/buildspecs/phase3.yml
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:7.0
+        EnvironmentVariables:
+          - Name: BUCKET
+            Type: PLAINTEXT
+            Value: !Ref DataBucket
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref BuildLogGroup
+          StreamName: phase3
+      TimeoutInMinutes: 30
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub "${ProjectName}-pipeline"
+      PipelineType: V2
+      ExecutionMode: QUEUED
+      RoleArn: !GetAtt PipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Variables:
+        - Name: RESET_TM
+          DefaultValue: "true"
+          Description: "true empties the translation memory before Phase 2 (0% cache start)."
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: GitHub
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: "1"
+              Configuration:
+                ConnectionArn: !Ref GitHubConnection
+                FullRepositoryId: !Ref GitHubRepository
+                BranchName: !Ref GitHubBranch
+                DetectChanges: "false"
+                OutputArtifactFormat: CODE_ZIP
+              OutputArtifacts:
+                - Name: SourceOutput
+        - Name: Phase1
+          Actions:
+            - Name: ExtractAndUpload
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              InputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                ProjectName: !Ref Phase1Project
+                EnvironmentVariables: '[{"name":"RUN_ID","value":"#{codepipeline.PipelineExecutionId}","type":"PLAINTEXT"}]'
+        - Name: Phase2
+          Actions:
+            - Name: TranslateInDocker
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              InputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                ProjectName: !Ref Phase2Project
+                EnvironmentVariables: '[{"name":"RUN_ID","value":"#{codepipeline.PipelineExecutionId}","type":"PLAINTEXT"},{"name":"RESET_TM","value":"#{variables.RESET_TM}","type":"PLAINTEXT"}]'
+        - Name: Phase3
+          Actions:
+            - Name: MergeToResx
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: LocalizedResx
+              Configuration:
+                ProjectName: !Ref Phase3Project
+                EnvironmentVariables: '[{"name":"RUN_ID","value":"#{codepipeline.PipelineExecutionId}","type":"PLAINTEXT"}]'
+
+Outputs:
+  PipelineName:
+    Value: !Ref Pipeline
+  DataBucketName:
+    Value: !Ref DataBucket
+  ArtifactBucketName:
+    Value: !Ref ArtifactBucket
+  GitHubConnectionArn:
+    Value: !Ref GitHubConnection
+  DbEndpoint:
+    Value: !GetAtt Database.Endpoint.Address
+  DbSecretArn:
+    Value: !GetAtt Database.MasterUserSecret.SecretArn
+  DbPrefixListId:
+    Value: !Ref DbPrefixList
+  LogGroupName:
+    Value: !Ref BuildLogGroup
