@@ -101,3 +101,14 @@ What is identical to Azure, which known telemetry quirks are kept on purpose, an
 ```bash
 cd aws && .venv/bin/python -m pytest -q
 ```
+
+## Verified
+
+Checked on 2026-10-16 in ap-south-1 with the EC2 runner (run `ec2-20261015t233954z`, `RESET_TM=true`):
+- **Pipeline:** Phase 1 → Phase 2 → Phase 3 completed. 7 localized `.resx` files were written to `runs/<run-id>/output/<lang>/`, and no raw files were left.
+- **Telemetry:** 7 `RESEARCH_DATA` rows, each with 50 segments, 50 NMT calls, 0 TM hits, 0% cache rate, 0 API failures, `cpu_limit` 2 and `host_cpu_count` 2 (m5.large, Intel Xeon Platinum 8259CL).
+- **Timing:** average file time 21.42 s; average throughput 8,426 segments/hour. The Azure Docker run in the report averaged 19.07 s and 9,462 segments/hour.
+- **Container credentials:** the container reached S3 through the instance role (IMDS hop limit 2), so the fallback keys were not needed.
+- **Firewall:** the database prefix-list entries survived stack updates (`deploy.sh` re-sync reported +0 / -0).
+- **Model conversion:** `ctranslate2==4.7.1` needs `transformers>=4.56` for conversion, so the converter uses `transformers==4.57.6` + `torch==2.14.1+cpu`. The converted model is cached in S3.
+- **CodeBuild:** blocked in this account (`AccountLimitExceededException`, 0 builds allowed) until AWS Support lifts the limit. Until then use `infra/run_on_ec2.sh`.
