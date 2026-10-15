@@ -15,7 +15,11 @@ ADMIN_CIDR="${ADMIN_CIDR:-}"
 PYTHON="${PYTHON:-python3}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
-aws --version 2>&1 | grep -q '^aws-cli/2' || { echo "❌ AWS CLI v2 is required."; exit 1; }
+AWS_CLI_VERSION="$(aws --version 2>&1 || true)"
+case "$AWS_CLI_VERSION" in
+  aws-cli/2*) ;;
+  *) echo "❌ AWS CLI v2 is required."; exit 1 ;;
+esac
 aws sts get-caller-identity --region "$REGION" >/dev/null || { echo "❌ No working AWS credentials (run: aws configure)."; exit 1; }
 "$PYTHON" -c "import boto3" 2>/dev/null || { echo "❌ boto3 missing; run: python3 -m venv aws/.venv && aws/.venv/bin/pip install -r aws/requirements-dev.txt, then PYTHON=aws/.venv/bin/python"; exit 1; }
 DEFAULT_VPC="$(aws ec2 describe-vpcs --region "$REGION" --filters Name=is-default,Values=true --query 'Vpcs[0].VpcId' --output text)"
