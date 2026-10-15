@@ -58,4 +58,7 @@ def extra_fields():
         "run_id": os.environ.get("RUN_ID", "unknown"),
         "cpu_limit": cpu_limit(),
         "cpu_model": cpu_model(),
+        # Cores the host has (thread pools may size themselves to this rather than cpu_limit).
+        "host_cpu_count": os.cpu_count(),
+        "omp_num_threads": os.environ.get("OMP_NUM_THREADS", "unset"),
     }

@@ -23,7 +23,8 @@ AZURE_FIELDS = [
     "cpu_usage_pct", "memory_mb", "serverless_cost_gb_sec", "api_retries", "api_failures",
     "api_throttled_429",
 ]
-AWS_FIELDS = ["cloud_provider", "region", "run_id", "cpu_limit", "cpu_model"]
+AWS_FIELDS = ["cloud_provider", "region", "run_id", "cpu_limit", "cpu_model", "host_cpu_count",
+              "omp_num_threads"]
 
 
 def parse_research_line(message):

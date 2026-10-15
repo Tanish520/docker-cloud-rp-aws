@@ -57,8 +57,20 @@ def test_extra_fields(monkeypatch):
     monkeypatch.setenv("AWS_REGION", "ap-south-1")
     monkeypatch.setenv("RUN_ID", "run-42")
     fields = aws_runtime.extra_fields()
-    assert set(fields) == {"cloud_provider", "region", "run_id", "cpu_limit", "cpu_model"}
+    assert set(fields) == {"cloud_provider", "region", "run_id", "cpu_limit", "cpu_model",
+                           "host_cpu_count", "omp_num_threads"}
     assert fields["cloud_provider"] == "aws"
     assert fields["region"] == "ap-south-1"
     assert fields["run_id"] == "run-42"
     assert isinstance(fields["cpu_limit"], int) and fields["cpu_limit"] >= 1
+
+
+def test_extra_fields_expose_host_cores_and_openmp_setting(monkeypatch):
+    # cpu_limit is what docker --cpuset-cpus allows; host_cpu_count is what thread pools may size themselves to.
+    import os
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+    fields = aws_runtime.extra_fields()
+    assert fields["host_cpu_count"] == os.cpu_count()
+    assert fields["omp_num_threads"] == "unset"
+    monkeypatch.setenv("OMP_NUM_THREADS", "2")
+    assert aws_runtime.extra_fields()["omp_num_threads"] == "2"
