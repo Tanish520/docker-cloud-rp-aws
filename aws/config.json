@@ -1,0 +1,6 @@
+{
+  "SourceRepoPath": "source-folder",
+  "InputFiles": ["resx_file_10.resx"],
+  "TargetLanguages": ["fr-FR", "es-ES", "hi-IN", "de-DE", "ja-JP", "ru-RU", "zh-CN"],
+  "TargetResxPath": "localized"
+}
