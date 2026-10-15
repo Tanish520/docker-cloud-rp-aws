@@ -16,9 +16,10 @@ def test_connection_string_matches_azure_odbc_options(db_env):
     assert conn.startswith("DRIVER={ODBC Driver 18 for SQL Server};SERVER=tcp:db.example.com,1433;")
     assert "DATABASE=localization;" in conn
     assert "UID={dbadmin};" in conn and "PWD={secret};" in conn
-    for option in ("Encrypt=yes;", "TrustServerCertificate=yes;", "Connection Timeout=30;",
-                   "MultipleActiveResultSets=False;", "Persist Security Info=False;"):
+    for option in ("Encrypt=yes;", "TrustServerCertificate=yes;", "Connection Timeout=30;", "MARS_Connection=no;"):
         assert option in conn
+    # ADO.NET-only keywords from Azure's string: ODBC Driver 18 rejects MultipleActiveResultSets=False.
+    assert "MultipleActiveResultSets" not in conn and "Persist Security Info" not in conn
 
 
 def test_password_with_odbc_special_characters_is_braced(db_env, monkeypatch):

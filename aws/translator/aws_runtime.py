@@ -19,16 +19,19 @@ def _odbc_value(value):
 
 
 def sql_conn_str(database=None):
-    """Same ODBC options as the Azure connection string, pointed at RDS."""
+    """The Azure connection settings, pointed at RDS, in ODBC keywords.
+
+    Azure's string also had the ADO.NET keywords `Persist Security Info=False` (no ODBC meaning) and
+    `MultipleActiveResultSets=False`, which ODBC Driver 18 rejects; `MARS_Connection=no` is its equivalent.
+    """
     database = database or db_name()
     return (
         "DRIVER={ODBC Driver 18 for SQL Server};"
         f"SERVER=tcp:{os.environ['DB_HOST']},1433;"
         f"DATABASE={database};"
-        "Persist Security Info=False;"
         f"UID={_odbc_value(os.environ['DB_USER'])};"
         f"PWD={_odbc_value(os.environ['DB_PASSWORD'])};"
-        "MultipleActiveResultSets=False;Encrypt=yes;TrustServerCertificate=yes;Connection Timeout=30;"
+        "MARS_Connection=no;Encrypt=yes;TrustServerCertificate=yes;Connection Timeout=30;"
     )
 
 
