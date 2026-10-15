@@ -177,3 +177,43 @@ def test_file_with_no_translatable_segments_fails(translation, run_env, s3, monk
     assert run(translation, run_env) == 1
     assert keys(s3, "raw") == ["resx_file_10.es-ES.xlf"]
     assert keys(s3, "translated") == []
+
+
+def flaky_store(fail_download=(), fail_delete=()):
+    from s3_store import RunStore
+
+    class FlakyStore(RunStore):
+        def download_raw(self, name, local_path):
+            if name in fail_download:
+                raise RuntimeError("S3 download timed out")
+            return super().download_raw(name, local_path)
+
+        def delete_raw(self, name):
+            if name in fail_delete:
+                raise RuntimeError("S3 delete failed")
+            return super().delete_raw(name)
+
+    return FlakyStore
+
+
+def test_download_error_on_one_file_does_not_stop_the_others(translation, run_env, s3, monkeypatch):
+    put_raw(s3, "resx_file_10.es-ES.xlf")
+    put_raw(s3, "resx_file_10.fr-FR.xlf")
+    monkeypatch.setattr(translation, "RunStore", flaky_store(fail_download={"resx_file_10.es-ES.xlf"}))
+    monkeypatch.setattr(translation, "get_sql_connection", lambda conn_str: (FakeConn(), 0))
+    monkeypatch.setattr(translation, "process_xlf_file", fake_processor(translation))
+
+    assert run(translation, run_env) == 1
+    assert keys(s3, "raw") == ["resx_file_10.es-ES.xlf"]
+    assert keys(s3, "translated") == ["resx_file_10.fr-FR.xlf"]
+
+
+def test_delete_error_after_success_keeps_the_translation(translation, run_env, s3, monkeypatch, capsys):
+    put_raw(s3, "resx_file_10.es-ES.xlf")
+    monkeypatch.setattr(translation, "RunStore", flaky_store(fail_delete={"resx_file_10.es-ES.xlf"}))
+    monkeypatch.setattr(translation, "get_sql_connection", lambda conn_str: (FakeConn(), 0))
+    monkeypatch.setattr(translation, "process_xlf_file", fake_processor(translation))
+
+    assert run(translation, run_env) == 0
+    assert keys(s3, "translated") == ["resx_file_10.es-ES.xlf"]
+    assert len(research_payloads(capsys.readouterr().out)) == 1

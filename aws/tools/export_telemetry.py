@@ -37,17 +37,18 @@ def parse_research_line(message):
 
 
 def collect(logs_client, log_group, run_id):
-    rows = []
+    # Events arrive oldest first; a file processed twice in one run (a retry) keeps its newest row.
+    latest = {}
     kwargs = {"logGroupName": log_group, "filterPattern": f'"RESEARCH_DATA" "{run_id}"'}
     while True:
         resp = logs_client.filter_log_events(**kwargs)
         for event in resp.get("events", []):
             payload = parse_research_line(event["message"])
             if payload and payload.get("run_id") == run_id:
-                rows.append(payload)
+                latest[(payload.get("file_name"), payload.get("target_lang"))] = payload
         token = resp.get("nextToken")
         if not token:
-            return rows
+            return list(latest.values())
         kwargs["nextToken"] = token
 
 

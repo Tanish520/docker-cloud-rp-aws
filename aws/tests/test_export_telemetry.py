@@ -66,3 +66,14 @@ def test_write_csv_uses_azure_order_then_aws_fields():
 def test_main_fails_when_the_run_has_no_telemetry(monkeypatch):
     monkeypatch.setattr(et.boto3, "client", lambda *args, **kwargs: FakeLogs([{"events": []}]))
     assert et.main(["--run-id", "missing"]) == 1
+
+
+def test_collect_keeps_only_the_latest_row_per_file():
+    # A retried file (e.g. its raw input could not be deleted) logs a second row; keep the newest.
+    logs = FakeLogs([{"events": [
+        {"message": line({"run_id": "r1", "file_name": "a.de-DE.xlf", "target_lang": "de-DE", "total_time": 1})},
+        {"message": line({"run_id": "r1", "file_name": "a.es-ES.xlf", "target_lang": "es-ES", "total_time": 2})},
+        {"message": line({"run_id": "r1", "file_name": "a.de-DE.xlf", "target_lang": "de-DE", "total_time": 3})},
+    ]}])
+    rows = et.collect(logs, "/cloud-loc/codebuild", "r1")
+    assert [(r["file_name"], r["total_time"]) for r in rows] == [("a.de-DE.xlf", 3), ("a.es-ES.xlf", 2)]

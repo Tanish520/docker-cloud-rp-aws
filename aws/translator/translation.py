@@ -463,7 +463,12 @@ async def main(config_path):
                 
                 profiler.start_timer("blob_download")
                 local_safe_name = os.path.basename(blob.name)
-                store.download_raw(blob.name, local_safe_name)
+                try:
+                    store.download_raw(blob.name, local_safe_name)
+                except Exception as download_e:
+                    failures += 1
+                    logger.error(f"❌ Could not download {blob.name}: {download_e}")
+                    continue
                 download_ms = profiler.stop_timer("blob_download")
 
                 parts = blob.name.split('.')
@@ -578,7 +583,10 @@ async def main(config_path):
             
                 # Unlike Azure, keep the raw file when anything failed so a stage retry can redo it.
                 if succeeded:
-                    store.delete_raw(blob.name)
+                    try:
+                        store.delete_raw(blob.name)
+                    except Exception as delete_e:
+                        logger.warning(f"⚠️ Translated {blob.name} but could not delete its raw input: {delete_e}")
                 if os.path.exists(local_safe_name): os.remove(local_safe_name)
                 
                 gc.collect()
