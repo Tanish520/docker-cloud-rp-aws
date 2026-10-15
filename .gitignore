@@ -19,3 +19,8 @@ huggingface/
 *.bin
 *.pt
 *.pth
+
+# --- AWS pipeline build outputs ---
+aws/translator/nllb_ct2/
+aws/translator/config.json
+/localized/

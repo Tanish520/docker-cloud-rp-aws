@@ -1,7 +1,7 @@
 {
   "blob_connection_string": "",
   "sql_conn_str": "",
-  "app_insights_connection_string": "InstrumentationKey=d32b359d-5628-4eda-8649-d498f5255ccb;IngestionEndpoint=https://eastasia-0.in.applicationinsights.azure.com/;LiveEndpoint=https://eastasia.livediagnostics.monitor.azure.com/;ApplicationId=8ea5ec9d-9e6b-4457-b1db-b60f740a9743",
+  "app_insights_connection_string": "",
   "SourceRepoPath": "source-folder",
   "TargetLanguages": [
     "fr-FR",
@@ -15,7 +15,7 @@
   "raw_container": "raw-files",
   "translated_container": "trans-files",
   "hf_models": {
-    "default": "facebook/nllb-200-distilled-600M"
+    "default": "facebook/mbart-large-50-many-to-many-mmt"
   },
   "hf_api_token": "",
   "TargetResxPath": "target-folder"

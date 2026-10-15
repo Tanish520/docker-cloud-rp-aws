@@ -22,6 +22,7 @@ stages:
               AZURE_SQL_CONN: $(AZURE_SQL_CONN)
               HUGGINGFACE_TOKEN: $(HUGGINGFACE_TOKEN)
               GITHUB_PAT: $(GITHUB_PAT)
+            workingDirectory: 'azure/API_based_HFace_AppInsight'
             displayName: "Inject secrets into config.json"
 
           - script: |
@@ -30,7 +31,7 @@ stages:
               echo "🚀 Starting Phase1 extraction..."
               python3 phase1.py config.json 2>&1 | tee phase1.log
               echo "✅ Phase1 completed. Full log saved to phase1.log"
-            workingDirectory: 'API_based_HFace_AppInsight'
+            workingDirectory: 'azure/API_based_HFace_AppInsight'
             displayName: "Run Phase1"
 
   - stage: Phase2
@@ -57,7 +58,7 @@ stages:
               AZURE_SQL_CONN: $(AZURE_SQL_CONN)
               APPINSIGHTS_CONNECTION_STRING: $(APPINSIGHTS_CONNECTION_STRING)
               GITHUB_PAT: $(GITHUB_PAT)
-            workingDirectory: 'Docker-Local-Inference' 
+            workingDirectory: 'azure/Docker-Local-Inference' 
             displayName: "Inject secrets into config.json"
 
           # ⚙️ NEW: Download & Convert
@@ -71,7 +72,7 @@ stages:
               pip uninstall -y torch
               rm -rf ~/.cache/huggingface
               echo "✅ Conversion complete."
-            workingDirectory: 'Docker-Local-Inference'
+            workingDirectory: 'azure/Docker-Local-Inference'
             displayName: "⚙️ Download & Convert NLLB"
 
           # Build the Docker Image
@@ -79,7 +80,7 @@ stages:
               set -e
               echo "🚀 Building Docker Image (Using Cached NLLB)..."
               docker build -t local-ai-translator .
-            workingDirectory: 'Docker-Local-Inference' 
+            workingDirectory: 'azure/Docker-Local-Inference' 
             displayName: "Build Docker Image"
 
           # Run the Docker Image
@@ -91,7 +92,7 @@ stages:
               
               # 🔥 CLEANUP: Revert config.json so secrets aren't tracked by Git!
               git checkout -- config.json || true
-            workingDirectory: 'Docker-Local-Inference'
+            workingDirectory: 'azure/Docker-Local-Inference'
             displayName: "Run Phase2 (Docker Inference)"
 
   - stage: Phase3
@@ -119,7 +120,7 @@ stages:
               AZURE_SQL_CONN: $(AZURE_SQL_CONN)
               HUGGINGFACE_TOKEN: $(HUGGINGFACE_TOKEN)
               GITHUB_PAT: $(GITHUB_PAT)
-            workingDirectory: 'API_based_HFace_AppInsight'
+            workingDirectory: 'azure/API_based_HFace_AppInsight'
             displayName: "Inject secrets into config.json"
 
           - script: |
@@ -128,7 +129,7 @@ stages:
               echo "🚀 Starting Phase3 integration..."
               python3 phase3.py config.json 2>&1 | tee phase3.log
               echo "✅ Phase3 completed. Full log saved to phase3.log"
-            workingDirectory: 'API_based_HFace_AppInsight'
+            workingDirectory: 'azure/API_based_HFace_AppInsight'
             displayName: "Run Phase3"
 
           # Commit localized resx back to repo
@@ -137,7 +138,7 @@ stages:
               git config user.email "buildagent@yourorg.com"
               git config user.name  "Azure Pipelines"
               
-            workingDirectory: 'API_based_HFace_AppInsight'
+            workingDirectory: 'azure/API_based_HFace_AppInsight'
             displayName: "🔄 Commit & Push localized .resx"
 
 #  - stage: Benchmark

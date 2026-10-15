@@ -1,0 +1,22 @@
+{
+  "blob_connection_string": "",
+  "sql_conn_str": "",
+  "app_insights_connection_string": "",
+  "SourceRepoPath": "source-folder",
+  "TargetLanguages": [
+    "fr-FR",
+    "es-ES",
+    "hi-IN",
+    "de-DE",
+    "ja-JP",
+    "ru-RU",
+    "zh-CN"
+  ],
+  "raw_container": "raw-files",
+  "translated_container": "trans-files",
+  "hf_models": {
+    "default": "facebook/nllb-200-distilled-600M"
+  },
+  "hf_api_token": "",
+  "TargetResxPath": "target-folder"
+}
