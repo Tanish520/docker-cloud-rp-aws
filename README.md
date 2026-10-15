@@ -1,120 +1,29 @@
-# How to Run
+# Cloud Localization Pipeline
 
-This project has two implementations that share the same three phases:
-- Phase 1: Extract .resx to XLIFF and upload to Azure Blob Storage
-- Phase 2: Translate (SQL Translation Memory + model) and upload translated XLIFF
-- Phase 3: Merge translated XLIFF back into localized .resx
+Translates English `.resx` resource strings into other languages in three phases:
 
-You can run locally or in Azure DevOps Pipelines.
+1. **Extract:** convert each `.resx` file into one XLIFF (`.xlf`) file per target language.
+2. **Translate:** look each string up in a SQL translation memory and translate the misses with NLLB-200 (distilled 600M, CTranslate2 INT8) inside Docker; write new translations back to the memory.
+3. **Merge:** turn the translated XLIFF files back into localized `.resx` files.
 
-## 1) Choose a variant
+## Two implementations
 
-- API-based (HuggingFace Inference API):
-  - Folder: API_based_HFace_AppInsight
-  - Config: API_based_HFace_AppInsight/config.json
+| Folder | Cloud | Status |
+|---|---|---|
+| [azure/](azure/README.md) | Azure DevOps Pipelines, Blob Storage, Azure SQL, Application Insights | Preserved: the Docker generation measured in the end-semester report |
+| [aws/](aws/README.md) | CodePipeline + CodeBuild, S3, RDS for SQL Server, CloudWatch | Current: used for future work |
 
-- VM-based (VM-hosted mBART via FastAPI):
-  - Folder: VM_MbartModel
-  - Config: VM_MbartModel/config.json
+Both use the same model, inference settings, workload and telemetry fields, so their results can be compared directly. The AWS design is in [the design spec](docs/superpowers/specs/2026-10-16-aws-migration-design.md).
 
-## 2) Prerequisites
+## Shared inputs
 
-### Common
-- Python 3.x
-- Azure Blob Storage account + connection string
-- Azure SQL Database + connection string (Translation Memory table required)
+[source-folder/](source-folder/) holds the 20 English `.resx` files. The comparison workload is `resx_file_10.resx` translated into `fr-FR`, `es-ES`, `hi-IN`, `de-DE`, `ja-JP`, `ru-RU` and `zh-CN`.
 
-### Python packages
-API-based:
-- azure-storage-blob
-- requests
-- pyodbc
-- opencensus-ext-azure
+## Project documents
 
-VM-based:
-- azure-storage-blob
-- requests
-- pyodbc
+- [ENDSEM_REPORT_README.md](ENDSEM_REPORT_README.md): source material for the end-semester report.
+- [idea.md](idea.md) and [implementation-checklist.md](implementation-checklist.md): the earlier optimization plan.
 
-### ODBC driver (macOS)
-`pyodbc` requires the Microsoft ODBC driver for SQL Server to be installed on your Mac.
+## Secrets
 
-## 3) Configure config.json
-
-Update the placeholders in the config for your chosen variant.
-
-API-based required keys:
-- blob_connection_string
-- sql_conn_str
-- hf_api_token
-
-API-based optional:
-- app_insights_connection_string
-
-VM-based required keys:
-- blob_connection_string
-- sql_conn_str
-- hf_api_token
-- vm_ip
-- vm_port
-
-Also set paths and containers as needed:
-- SourceRepoPath (default: source-folder)
-- TargetResxPath (default: target-folder)
-- raw_container (default: raw-files)
-- translated_container (default: trans-files)
-- TargetLanguages
-
-## 4) Ensure Translation Memory table exists
-
-The translation scripts expect a table named `Translations` with columns:
-- SourceText
-- TargetLang
-- TranslatedText
-
-## 5) Run locally
-
-From the chosen variant folder:
-
-```bash
-python3 phase1.py config.json
-python3 translation.py config.json
-python3 phase3.py config.json
-```
-
-Outputs are written to:
-- Azure Blob Storage containers (raw-files, trans-files)
-- Localized .resx files under TargetResxPath
-
-## 6) Run in Azure DevOps Pipelines
-
-Each variant includes an Azure DevOps pipeline file:
-- API-based: API_based_HFace_AppInsight/azure-pipelines.yml
-- VM-based: VM_MbartModel/azure-pipelines.yml
-
-Set the following pipeline secrets/variables:
-- AZURE_STORAGE_CONN
-- AZURE_SQL_CONN
-- HUGGINGFACE_TOKEN
-- (API-based only) APPINSIGHTS_CONNECTION_STRING
-- (VM-based only) VM_IP, VM_PORT
-
-The pipeline runs the same three phases and can commit localized .resx files back to the repo.
-
-## 7) Notes
-
-- The VM-based variant assumes a FastAPI translation server is running and reachable at vm_ip:vm_port.
-- If no translated XLIFF files are present, Phase 3 will exit early.
-- Blob containers are created if they do not exist.
-
-# Introduction
-This project provides a solution for localizing `.resx` files using a three-phase process: extraction to XLIFF, translation (via SQL Translation Memory and a language model), and merging translated XLIFF back into `.resx`. It supports both API-based (HuggingFace Inference API) and VM-based (VM-hosted mBART via FastAPI) translation variants.
-
-# Getting Started
-Refer to the "How to Run" section above for detailed instructions on setting up prerequisites, configuring `config.json`, and running the project locally or in Azure DevOps Pipelines.
-
-# Build and Test
-The project is designed to be run via Python scripts as described in the "Run Locally" section. Testing involves verifying the correct extraction, translation, and merging of `.resx` files.
-
-# Contribute
-Contributions are welcome! Please follow the existing code structure and submit pull requests for any improvements or bug fixes.
+Never commit keys, passwords or tokens. Azure secrets are injected by the pipeline at run time; AWS uses IAM roles and Secrets Manager. Keys that were committed earlier remain in git history and must be rotated.
