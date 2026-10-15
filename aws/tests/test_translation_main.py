@@ -217,3 +217,15 @@ def test_delete_error_after_success_keeps_the_translation(translation, run_env, 
     assert run(translation, run_env) == 0
     assert keys(s3, "translated") == ["resx_file_10.es-ES.xlf"]
     assert len(research_payloads(capsys.readouterr().out)) == 1
+
+
+def test_metric_views_are_registered_without_an_exporter(translation, run_env, s3, monkeypatch):
+    # Azure records into registered OpenCensus views; AWS must do the same in-process work for a comparable overhead.
+    calls = []
+    monkeypatch.setattr(translation, "register_metrics_views", lambda exporter: calls.append(exporter))
+    monkeypatch.setattr(translation, "get_sql_connection", lambda conn_str: (FakeConn(), 0))
+    monkeypatch.setattr(translation, "process_xlf_file", fake_processor(translation))
+    put_raw(s3, "resx_file_10.es-ES.xlf")
+
+    assert run(translation, run_env) == 0
+    assert calls == [None]

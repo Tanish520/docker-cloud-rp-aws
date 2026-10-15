@@ -229,7 +229,7 @@ If the user supplies Azure's exact table definition, this one is replaced to mat
 **Known, documented differences:**
 - Cloud services, region, network path and CPU model.
 - The database instance size (Azure SQL free serverless vs RDS `db.t3.small` Express).
-- `telemetry_overhead_ms` excludes the Application Insights exporter's background work.
+- `telemetry_overhead_ms` excludes the Application Insights exporter's background work. The same OpenCensus views are registered on AWS (without an exporter), so the in-process recording work matches.
 - The converter is pinned on AWS (unpinned on Azure).
 - On AWS, raw files are kept on failure and failures produce a non-zero exit code. Neither affects successful-run timing.
 

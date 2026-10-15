@@ -447,7 +447,11 @@ async def main(config_path):
     try:
         exporter = metrics_exporter.new_metrics_exporter(connection_string=config['app_insights_connection_string'])
         register_metrics_views(exporter)
-    except: exporter = None
+    except:
+        exporter = None
+        # No Application Insights on AWS: register the same views without an exporter so the
+        # in-process recording work (and telemetry_overhead_ms) matches the Azure run.
+        register_metrics_views(None)
 
     try:
         blobs = store.list_raw()
