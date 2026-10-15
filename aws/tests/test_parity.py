@@ -10,3 +10,7 @@ AWS_TRANSLATOR = AWS_DIR / "translator"
 
 def test_resx_to_xlf_is_identical_to_azure():
     assert function_dump(AWS_DIR / "phase1.py", "resx_to_xlf") == function_dump(AZ_PHASES / "phase1.py", "resx_to_xlf")
+
+
+def test_xlf_to_resx_is_identical_to_azure():
+    assert function_dump(AWS_DIR / "phase3.py", "xlf_to_resx") == function_dump(AZ_PHASES / "phase3.py", "xlf_to_resx")
