@@ -27,6 +27,10 @@ run_in_image() {
   docker run --rm "${DOCKER_ENV[@]}" -v "$TRANSLATOR_DIR:/app" "$IMAGE" "$@"
 }
 
+s3_reachable() {
+  run_in_image python -c "import boto3, os; boto3.client('s3').head_bucket(Bucket=os.environ['BUCKET'])"
+}
+
 model_loads() {
   run_in_image python -c "import ctranslate2; ctranslate2.Translator('nllb_ct2', device='cpu', compute_type='int8')"
 }
@@ -45,6 +49,15 @@ convert_model() {
 echo "🐳 Building translator image..."
 cp aws/config.json "$TRANSLATOR_DIR/config.json"
 docker build -t "$IMAGE" "$TRANSLATOR_DIR"
+
+# Check S3 access from inside the container now, before ~15 minutes of model work.
+echo "🔑 Checking that the container can reach s3://$BUCKET..."
+if ! s3_reachable; then
+  echo "⚠️ The CodeBuild credentials endpoint is not usable from the container; passing short-lived keys instead."
+  eval "$(aws configure export-credentials --format env)"
+  DOCKER_ENV+=(-e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN)
+  s3_reachable || { echo "❌ The container cannot reach s3://$BUCKET."; exit 1; }
+fi
 
 echo "📦 Looking for cached model $MODEL_KEY..."
 if python aws/model_cache.py fetch --dir "$MODEL_DIR" && model_loads; then

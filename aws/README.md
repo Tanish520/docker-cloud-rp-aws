@@ -70,11 +70,7 @@ What is identical to Azure, which known telemetry quirks are kept on purpose, an
 
 ## Troubleshooting
 
-- **Phase 2 cannot reach S3 from inside the container** (`NoCredentialsError` or `Unable to locate credentials`): in `scripts/run_phase2.sh`, after the `DOCKER_ENV=(...)` line, add
-  ```bash
-  eval "$(aws configure export-credentials --format env)"
-  DOCKER_ENV+=(-e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN)
-  ```
+- **Phase 2 cannot reach S3 from inside the container:** right after building the image, Phase 2 checks S3 access from inside the container. If the CodeBuild credentials endpoint is not usable there, it switches to short-lived keys (`aws configure export-credentials`) automatically and logs a warning. If it still fails ("The container cannot reach s3://…"), check the CodeBuild role's S3 permissions in `infra/pipeline.yaml`.
 - **Phase 2 times out connecting to the database:** CodeBuild's IP ranges may have changed; run `deploy.sh` again (it re-syncs the firewall).
 - **The cached model is broken:** `aws s3 rm s3://<data-bucket>/models/<model-key>/_COMPLETE` forces a fresh conversion on the next run.
 
