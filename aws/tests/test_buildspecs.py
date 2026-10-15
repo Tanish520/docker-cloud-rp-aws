@@ -67,3 +67,11 @@ def test_model_converter_uses_the_same_base_image_as_the_translator():
     image = re.search(r"^FROM (\S+)", dockerfile, re.M).group(1)
     assert f'BASE_IMAGE="{image}"' in RUNNER.read_text(encoding="utf-8")
     assert image.endswith("-bookworm")
+
+
+def test_converter_takes_cpu_torch_from_the_pytorch_index_and_everything_else_from_pypi():
+    # --index-url would make the PyTorch index the only source, and some torch dependencies are not
+    # installable from it; pin the exact CPU build and add the PyTorch index as an extra source.
+    script = RUNNER.read_text(encoding="utf-8")
+    assert '"torch==2.2.2+cpu" --extra-index-url https://download.pytorch.org/whl/cpu' in script
+    assert "--index-url https://download.pytorch.org" not in script
