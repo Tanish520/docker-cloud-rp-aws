@@ -483,7 +483,11 @@ async def main(config_path):
                     logger.info(f"Translating {local_safe_name} to {target_lang}...")
                     
                     file_stats, xml_parse_ms, xml_write_ms, total_source_chars, total_translated_chars = await process_xlf_file(local_safe_name, target_lang, conn, exporter)
-                    
+
+                    # process_xlf_file and translate_local swallow failures; treat them as a failed file.
+                    if profiler.counters["api_failures"] or not profiler.counters["total_segments"]:
+                        raise RuntimeError(f"translation incomplete: {profiler.counters['api_failures']} failed batches, {profiler.counters['total_segments']} segments")
+
                     logger.info(f"⬆️ Uploading processed {blob.name} to translated folder...")
                     profiler.start_timer("blob_upload")
                     store.upload_translated(local_safe_name, blob.name)

@@ -68,10 +68,14 @@ def keys(s3, stage):
     return sorted(obj["Key"].rsplit("/", 1)[1] for obj in resp.get("Contents", []))
 
 
-def fake_processor(fail_for=()):
+def fake_processor(translation, fail_for=(), segments=1, failed_batches=0):
+    """Stands in for process_xlf_file, recording segments and swallowed batch failures like the real one."""
     async def process(local_path, target_lang, conn, exporter):
         if target_lang in fail_for:
             raise RuntimeError("inference failed")
+        for _ in range(segments):
+            translation.profiler.add_segment_stats(tm_hit=False)
+        translation.profiler.counters["api_failures"] += failed_batches
         stats = {"total_api_time_ms": 1.0, "total_sql_time_ms": 1.0, "total_commit_time_ms": 1.0}
         return stats, 0.1, 0.1, 5, 5
     return process
@@ -90,7 +94,7 @@ def test_success_uploads_translation_deletes_raw_and_emits_aws_fields(translatio
     put_raw(s3, "resx_file_10.es-ES.xlf")
     conn = FakeConn()
     monkeypatch.setattr(translation, "get_sql_connection", lambda conn_str: (conn, 0))
-    monkeypatch.setattr(translation, "process_xlf_file", fake_processor())
+    monkeypatch.setattr(translation, "process_xlf_file", fake_processor(translation))
 
     assert run(translation, run_env) == 0
     assert keys(s3, "raw") == []
@@ -109,7 +113,7 @@ def test_failed_file_keeps_its_raw_input_and_reports_failure(translation, run_en
     put_raw(s3, "resx_file_10.es-ES.xlf")
     put_raw(s3, "resx_file_10.fr-FR.xlf")
     monkeypatch.setattr(translation, "get_sql_connection", lambda conn_str: (FakeConn(), 0))
-    monkeypatch.setattr(translation, "process_xlf_file", fake_processor(fail_for={"fr-FR"}))
+    monkeypatch.setattr(translation, "process_xlf_file", fake_processor(translation, fail_for={"fr-FR"}))
 
     assert run(translation, run_env) == 1
     assert keys(s3, "raw") == ["resx_file_10.fr-FR.xlf"]
@@ -120,11 +124,11 @@ def test_retry_after_partial_failure_only_redoes_failed_file(translation, run_en
     put_raw(s3, "resx_file_10.es-ES.xlf")
     put_raw(s3, "resx_file_10.fr-FR.xlf")
     monkeypatch.setattr(translation, "get_sql_connection", lambda conn_str: (FakeConn(), 0))
-    monkeypatch.setattr(translation, "process_xlf_file", fake_processor(fail_for={"fr-FR"}))
+    monkeypatch.setattr(translation, "process_xlf_file", fake_processor(translation, fail_for={"fr-FR"}))
     assert run(translation, run_env) == 1
 
     seen = []
-    succeed = fake_processor()
+    succeed = fake_processor(translation)
 
     async def record(local_path, target_lang, conn, exporter):
         seen.append(target_lang)
@@ -140,7 +144,7 @@ def test_retry_after_partial_failure_only_redoes_failed_file(translation, run_en
 def test_database_unreachable_fails_before_touching_files(translation, run_env, s3, monkeypatch):
     put_raw(s3, "resx_file_10.es-ES.xlf")
     monkeypatch.setattr(translation, "get_sql_connection", lambda conn_str: (None, 0))
-    monkeypatch.setattr(translation, "process_xlf_file", fake_processor())
+    monkeypatch.setattr(translation, "process_xlf_file", fake_processor(translation))
 
     assert run(translation, run_env) == 1
     assert keys(s3, "raw") == ["resx_file_10.es-ES.xlf"]
@@ -150,3 +154,26 @@ def test_database_unreachable_fails_before_touching_files(translation, run_env, 
 def test_missing_bucket_setting_fails(translation, run_env, monkeypatch):
     monkeypatch.delenv("BUCKET")
     assert run(translation, run_env) == 1
+
+
+def test_swallowed_inference_failure_fails_the_file(translation, run_env, s3, monkeypatch, capsys):
+    # translate_local catches CTranslate2 errors and only bumps api_failures; that must not pass as success.
+    put_raw(s3, "resx_file_10.es-ES.xlf")
+    monkeypatch.setattr(translation, "get_sql_connection", lambda conn_str: (FakeConn(), 0))
+    monkeypatch.setattr(translation, "process_xlf_file", fake_processor(translation, failed_batches=1))
+
+    assert run(translation, run_env) == 1
+    assert keys(s3, "raw") == ["resx_file_10.es-ES.xlf"]
+    assert keys(s3, "translated") == []
+    assert research_payloads(capsys.readouterr().out) == []
+
+
+def test_file_with_no_translatable_segments_fails(translation, run_env, s3, monkeypatch):
+    # process_xlf_file returns zeros for an unreadable XLIFF; an empty result must not count as translated.
+    put_raw(s3, "resx_file_10.es-ES.xlf")
+    monkeypatch.setattr(translation, "get_sql_connection", lambda conn_str: (FakeConn(), 0))
+    monkeypatch.setattr(translation, "process_xlf_file", fake_processor(translation, segments=0))
+
+    assert run(translation, run_env) == 1
+    assert keys(s3, "raw") == ["resx_file_10.es-ES.xlf"]
+    assert keys(s3, "translated") == []
