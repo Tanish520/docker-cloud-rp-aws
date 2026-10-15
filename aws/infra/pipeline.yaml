@@ -25,6 +25,10 @@ Parameters:
     Type: String
     Default: "0,1"
     Description: Cores the Phase 2 container may use (docker --cpuset-cpus). "0,1" matches the 2-vCPU Azure agent.
+  RunnerInstanceType:
+    Type: String
+    Default: m5.large
+    Description: EC2 runner size (used instead of CodeBuild by infra/run_on_ec2.sh). m5.large = 2 vCPU / 8 GB like the Azure agent.
 
 Resources:
   DataBucket:
@@ -160,6 +164,11 @@ Resources:
           ToPort: 1433
           SourcePrefixListId: !Ref DbPrefixList
           Description: Entries are synced by aws/infra/deploy.sh
+        - IpProtocol: tcp
+          FromPort: 1433
+          ToPort: 1433
+          SourceSecurityGroupId: !GetAtt RunnerSecurityGroup.GroupId
+          Description: EC2 runner (infra/run_on_ec2.sh)
 
   Database:
     Type: AWS::RDS::DBInstance
@@ -180,6 +189,107 @@ Resources:
       DeletionProtection: false
       VPCSecurityGroups:
         - !GetAtt DbSecurityGroup.GroupId
+
+  RunnerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/${ProjectName}/ec2-runner"
+      RetentionInDays: 90
+
+  RunnerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: EC2 runner - outbound only (reached through SSM, no inbound ports)
+
+  RunnerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
+      Policies:
+        - PolicyName: localization-runner
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: RunFilesSourceAndModelCache
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:AbortMultipartUpload
+                Resource: !Sub "${DataBucket.Arn}/*"
+              - Sid: ListRunFiles
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt DataBucket.Arn
+              - Sid: DatabaseSecret
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !GetAtt Database.MasterUserSecret.SecretArn
+              - Sid: RunCommandOutput
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource: !GetAtt RunnerLogGroup.Arn
+              - Sid: FindLogGroup
+                Effect: Allow
+                Action: logs:DescribeLogGroups
+                Resource: "*"
+
+  RunnerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref RunnerRole
+
+  RunnerLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub "${ProjectName}-runner"
+      LaunchTemplateData:
+        ImageId: "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}"
+        InstanceType: !Ref RunnerInstanceType
+        IamInstanceProfile:
+          Arn: !GetAtt RunnerInstanceProfile.Arn
+        SecurityGroupIds:
+          - !GetAtt RunnerSecurityGroup.GroupId
+        InstanceInitiatedShutdownBehavior: terminate
+        MetadataOptions:
+          HttpEndpoint: enabled
+          HttpTokens: required
+          HttpPutResponseHopLimit: 2
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 40
+              VolumeType: gp3
+              DeleteOnTermination: true
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub "${ProjectName}-runner"
+              - Key: Project
+                Value: !Ref ProjectName
+        UserData: !Base64 |
+          #!/bin/bash
+          set -eux
+          # Safety net: terminate after 4 hours even if the laptop that started the run disconnects.
+          shutdown -h +240
+          dnf install -y docker python3-pip
+          systemctl enable --now docker
+          python3 -m venv /opt/venv
+          /opt/venv/bin/pip install --quiet "boto3>=1.34,<2"
 
   CodeBuildRole:
     Type: AWS::IAM::Role
@@ -463,3 +573,7 @@ Outputs:
     Value: !Ref DbPrefixList
   LogGroupName:
     Value: !Ref BuildLogGroup
+  RunnerLaunchTemplateId:
+    Value: !Ref RunnerLaunchTemplate
+  RunnerLogGroupName:
+    Value: !Ref RunnerLogGroup

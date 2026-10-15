@@ -90,11 +90,12 @@ def test_database_is_disposable_sql_server_express():
     assert "MasterUserPassword" not in props
 
 
-def test_database_firewall_only_allows_the_prefix_list():
-    [rule] = resources()["DbSecurityGroup"]["Properties"]["SecurityGroupIngress"]
-    assert rule["FromPort"] == 1433 and rule["ToPort"] == 1433
-    assert rule["SourcePrefixListId"] == {"Ref": "DbPrefixList"}
-    assert "CidrIp" not in rule
+def test_database_firewall_allows_only_codebuild_ranges_and_the_ec2_runner():
+    rules = resources()["DbSecurityGroup"]["Properties"]["SecurityGroupIngress"]
+    assert all(r["FromPort"] == 1433 and r["ToPort"] == 1433 for r in rules)
+    sources = [r.get("SourcePrefixListId") or r.get("SourceSecurityGroupId") for r in rules]
+    assert sources == [{"Ref": "DbPrefixList"}, {"GetAtt": "RunnerSecurityGroup.GroupId"}]
+    assert not any("CidrIp" in r for r in rules)
 
 
 def test_buckets_block_public_access():
@@ -126,3 +127,42 @@ def test_codebuild_can_abort_its_own_multipart_uploads():
     statements = resources()["CodeBuildRole"]["Properties"]["Policies"][0]["PolicyDocument"]["Statement"]
     run_files = next(s for s in statements if s["Sid"] == "RunFilesAndModelCache")
     assert "s3:AbortMultipartUpload" in run_files["Action"]
+
+
+def runner_launch_data():
+    return resources()["RunnerLaunchTemplate"]["Properties"]["LaunchTemplateData"]
+
+
+def test_runner_is_a_two_vcpu_amazon_linux_machine_that_terminates_itself():
+    data = runner_launch_data()
+    assert template()["Parameters"]["RunnerInstanceType"]["Default"] == "m5.large"
+    assert data["InstanceType"] == {"Ref": "RunnerInstanceType"}
+    assert data["ImageId"] == "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}"
+    assert data["InstanceInitiatedShutdownBehavior"] == "terminate"
+    assert data["MetadataOptions"]["HttpTokens"] == "required"
+    assert data["MetadataOptions"]["HttpPutResponseHopLimit"] == 2  # containers can reach the instance role
+    [disk] = data["BlockDeviceMappings"]
+    assert disk["Ebs"]["VolumeSize"] == 40 and disk["Ebs"]["VolumeType"] == "gp3"
+    assert data["SecurityGroupIds"] == [{"GetAtt": "RunnerSecurityGroup.GroupId"}]
+
+
+def test_runner_bootstrap_installs_docker_and_has_a_safety_shutdown():
+    user_data = runner_launch_data()["UserData"]["Base64"]
+    assert "shutdown -h +240" in user_data
+    assert "dnf install -y docker" in user_data
+    assert "/opt/venv" in user_data and "boto3" in user_data
+
+
+def test_runner_role_can_use_ssm_the_data_bucket_the_db_secret_and_its_logs():
+    role = resources()["RunnerRole"]["Properties"]
+    assert role["AssumeRolePolicyDocument"]["Statement"][0]["Principal"]["Service"] == "ec2.amazonaws.com"
+    assert any("AmazonSSMManagedInstanceCore" in str(arn) for arn in role["ManagedPolicyArns"])
+    statements = role["Policies"][0]["PolicyDocument"]["Statement"]
+    actions = {a for s in statements for a in (s["Action"] if isinstance(s["Action"], list) else [s["Action"]])}
+    assert {"s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload", "s3:ListBucket",
+            "secretsmanager:GetSecretValue", "logs:CreateLogStream", "logs:PutLogEvents"} <= actions
+
+
+def test_runner_log_group_and_outputs():
+    assert resources()["RunnerLogGroup"]["Properties"]["RetentionInDays"] == 90
+    assert {"RunnerLaunchTemplateId", "RunnerLogGroupName"} <= set(template()["Outputs"])
