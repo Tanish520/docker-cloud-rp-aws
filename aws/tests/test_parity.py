@@ -60,7 +60,8 @@ def test_dockerfile_differs_only_in_base_image():
     aws = (AWS_TRANSLATOR / "Dockerfile").read_text(encoding="utf-8").splitlines()
     assert len(azure) == len(aws)
     differing = [(a, b) for a, b in zip(azure, aws) if a != b]
-    assert differing == [("FROM python:3.10-slim", "FROM public.ecr.aws/docker/library/python:3.10-slim")]
+    # Pinned to bookworm: the Dockerfile installs msodbcsql18 from Microsoft's Debian 12 repo.
+    assert differing == [("FROM python:3.10-slim", "FROM public.ecr.aws/docker/library/python:3.10-slim-bookworm")]
 
 
 def test_main_timing_and_storage_timeline_matches_azure():

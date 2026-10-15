@@ -14,7 +14,7 @@ RESET_TM="${RESET_TM:-true}"
 export DB_NAME="${DB_NAME:-localization}"
 
 IMAGE="local-ai-translator"
-BASE_IMAGE="public.ecr.aws/docker/library/python:3.10-slim"
+BASE_IMAGE="public.ecr.aws/docker/library/python:3.10-slim-bookworm"
 TRANSLATOR_DIR="$(pwd)/aws/translator"
 MODEL_DIR="$TRANSLATOR_DIR/nllb_ct2"
 

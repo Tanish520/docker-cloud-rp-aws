@@ -60,3 +60,10 @@ def test_shell_scripts_parse():
     assert scripts
     for script in scripts:
         subprocess.run(["bash", "-n", str(script)], check=True)
+
+
+def test_model_converter_uses_the_same_base_image_as_the_translator():
+    dockerfile = (AWS_DIR / "translator" / "Dockerfile").read_text(encoding="utf-8")
+    image = re.search(r"^FROM (\S+)", dockerfile, re.M).group(1)
+    assert f'BASE_IMAGE="{image}"' in RUNNER.read_text(encoding="utf-8")
+    assert image.endswith("-bookworm")
