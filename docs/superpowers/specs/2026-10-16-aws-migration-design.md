@@ -170,7 +170,7 @@ Runs inside the Phase 2 image, which already has the ODBC driver.
 - `init` connects to `master`, creates the `localization` database if it is missing (RDS SQL Server cannot create one at launch), then creates the table if it is missing:
   ```sql
   CREATE TABLE Translations (
-      SourceText     NVARCHAR(450) NOT NULL,
+      SourceText     NVARCHAR(434) NOT NULL,
       TargetLang     NVARCHAR(16)  NOT NULL,
       TranslatedText NVARCHAR(MAX) NULL,
       ModelName      NVARCHAR(100) NULL,

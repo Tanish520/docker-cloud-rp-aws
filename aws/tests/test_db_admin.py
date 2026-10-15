@@ -65,3 +65,10 @@ def test_unsafe_database_name_is_rejected_before_connecting(db_admin, monkeypatc
 def test_cli_usage(db_admin):
     assert db_admin.main(["db_admin.py"]) == 2
     assert db_admin.main(["db_admin.py", "drop"]) == 2
+
+
+def test_primary_key_fits_sql_servers_900_byte_clustered_key_limit(db_admin):
+    # A wider key is created with only a warning; inserts of long strings then fail and the TM silently stops filling.
+    import re
+    widths = dict(re.findall(r"(SourceText|TargetLang)\s+NVARCHAR\((\d+)\)", db_admin.CREATE_TABLE_SQL))
+    assert 2 * (int(widths["SourceText"]) + int(widths["TargetLang"])) <= 900

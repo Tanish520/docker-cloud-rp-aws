@@ -52,7 +52,7 @@ The command prints a `pipelineExecutionId`; that is the **run ID** used in S3 pa
 
 ## Changing the workload
 
-Edit [config.json](config.json): `InputFiles` (empty list = every `.resx` in `SourceRepoPath`) and `TargetLanguages`. Commit and push before starting a run. Keep the defaults (`resx_file_10.resx`, 7 languages) for comparisons with the Azure numbers.
+Edit [config.json](config.json): `InputFiles` (empty list = every `.resx` in `SourceRepoPath`) and `TargetLanguages`. Source strings longer than 434 characters are still translated but cannot be stored in the translation memory (SQL Server's 900-byte key limit), so they never count as cache hits. Commit and push before starting a run. Keep the defaults (`resx_file_10.resx`, 7 languages) for comparisons with the Azure numbers.
 
 ## Tearing down
 

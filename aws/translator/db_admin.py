@@ -13,7 +13,7 @@ import aws_runtime
 CREATE_DATABASE_SQL = "IF DB_ID(N'{name}') IS NULL CREATE DATABASE [{name}];"
 CREATE_TABLE_SQL = """IF OBJECT_ID(N'dbo.Translations', N'U') IS NULL
 CREATE TABLE dbo.Translations (
-    SourceText     NVARCHAR(450) NOT NULL,
+    SourceText     NVARCHAR(434) NOT NULL,  -- 2*(434+16) = 900 bytes, SQL Server's clustered-key limit
     TargetLang     NVARCHAR(16)  NOT NULL,
     TranslatedText NVARCHAR(MAX) NULL,
     ModelName      NVARCHAR(100) NULL,
