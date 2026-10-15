@@ -1,6 +1,6 @@
 """The AWS pipeline must keep the Azure logic so results stay comparable."""
-from astutil import (assigned_value_dump, function_dump, import_dumps, shared_top_level,
-                     statement_slice)
+from astutil import (assigned_value_dump, function_dump, import_dumps, main_timeline,
+                     shared_top_level, statement_slice)
 from helpers import AWS_DIR, AZURE_DIR
 
 AZ_PHASES = AZURE_DIR / "API_based_HFace_AppInsight"
@@ -61,3 +61,24 @@ def test_dockerfile_differs_only_in_base_image():
     assert len(azure) == len(aws)
     differing = [(a, b) for a, b in zip(azure, aws) if a != b]
     assert differing == [("FROM python:3.10-slim", "FROM public.ecr.aws/docker/library/python:3.10-slim")]
+
+
+def test_main_timing_and_storage_timeline_matches_azure():
+    # Every timer, sleep and storage call in main(), in source order: these feed the headline metrics.
+    assert main_timeline(AWS_TRANSLATION) == main_timeline(AZ_TRANSLATION)
+
+
+def test_timeline_detects_changed_sleep_and_moved_timer(tmp_path):
+    source = AWS_TRANSLATION.read_text(encoding="utf-8")
+    original = main_timeline(AWS_TRANSLATION)
+
+    shorter_sleep = tmp_path / "sleep.py"
+    shorter_sleep.write_text(source.replace("await asyncio.sleep(2)", "await asyncio.sleep(0)"), encoding="utf-8")
+    assert main_timeline(shorter_sleep) != original
+
+    upload = "                    store.upload_translated(local_safe_name, blob.name)\n"
+    timer = '                    profiler.start_timer("blob_upload")\n'
+    assert timer + upload in source
+    moved_timer = tmp_path / "moved.py"
+    moved_timer.write_text(source.replace(timer + upload, upload + timer), encoding="utf-8")
+    assert main_timeline(moved_timer) != original
