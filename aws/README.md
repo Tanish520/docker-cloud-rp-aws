@@ -23,6 +23,8 @@ aws/.venv/bin/pip install -r aws/requirements-dev.txt
 PYTHON=aws/.venv/bin/python bash aws/infra/deploy.sh
 ```
 
+The pipeline builds the GitHub branch named by `GITHUB_BRANCH`, which defaults to `main`. Until the `aws/` folder has been merged into `main`, deploy with the branch that contains it, for example `GITHUB_BRANCH=aws-migration PYTHON=aws/.venv/bin/python bash aws/infra/deploy.sh`. Otherwise Phase 1 fails because `aws/buildspecs/phase1.yml` does not exist on `main`.
+
 `deploy.sh` settings (environment variables): `AWS_REGION` (default `ap-south-1`), `STACK_NAME` and `PROJECT_NAME` (default `cloud-loc`), `GITHUB_REPOSITORY` (default `AayushGupta56/docker-cloud-rp`), `GITHUB_BRANCH` (default `main`), `DB_INSTANCE_CLASS` (default `db.t3.small`), `PHASE2_CPUSET` (default `0,1`), `ADMIN_CIDR` (optional extra address allowed to reach the database, e.g. your IP for inspecting it).
 
 Then approve the GitHub connection once: AWS console → **Developer Tools** → **Settings** → **Connections** → `cloud-loc-github` → **Update pending connection**, and allow the AWS Connector app on the repository. The pipeline's automatic first run fails at Source while the connection is pending; that is expected.

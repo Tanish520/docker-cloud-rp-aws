@@ -19,3 +19,10 @@ def test_aws_readme_documents_the_essential_commands():
     for command in ("aws/infra/deploy.sh", "aws/infra/teardown.sh", "start-pipeline-execution",
                     "export_telemetry.py", "RESET_TM"):
         assert command in text, command
+
+
+def test_aws_readme_says_which_branch_to_deploy_before_merge():
+    # The pipeline builds GITHUB_BRANCH (default main); before aws/ is merged, main has no buildspecs.
+    text = (AWS_DIR / "README.md").read_text(encoding="utf-8")
+    assert "merged into `main`" in text
+    assert "GITHUB_BRANCH=" in text
