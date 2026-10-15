@@ -114,3 +114,15 @@ def test_pipeline_is_manual_with_four_stages_and_shared_run_id():
     for stage in stages[1:]:
         assert action_env(stage)["RUN_ID"] == "#{codepipeline.PipelineExecutionId}"
     assert action_env(stages[2])["RESET_TM"] == "#{variables.RESET_TM}"
+
+
+def test_buckets_clean_up_incomplete_multipart_uploads():
+    for name in ("DataBucket", "ArtifactBucket"):
+        rules = resources()[name]["Properties"]["LifecycleConfiguration"]["Rules"]
+        assert any(r.get("AbortIncompleteMultipartUpload", {}).get("DaysAfterInitiation") == 1 for r in rules), name
+
+
+def test_codebuild_can_abort_its_own_multipart_uploads():
+    statements = resources()["CodeBuildRole"]["Properties"]["Policies"][0]["PolicyDocument"]["Statement"]
+    run_files = next(s for s in statements if s["Sid"] == "RunFilesAndModelCache")
+    assert "s3:AbortMultipartUpload" in run_files["Action"]

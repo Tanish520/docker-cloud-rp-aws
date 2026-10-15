@@ -46,6 +46,10 @@ Resources:
             Status: Enabled
             Prefix: runs/
             ExpirationInDays: 30
+          - Id: abort-incomplete-uploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
 
   DataBucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -83,6 +87,10 @@ Resources:
           - Id: expire-pipeline-artifacts
             Status: Enabled
             ExpirationInDays: 30
+          - Id: abort-incomplete-uploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
 
   ArtifactBucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -200,6 +208,7 @@ Resources:
                   - s3:GetObject
                   - s3:PutObject
                   - s3:DeleteObject
+                  - s3:AbortMultipartUpload
                 Resource: !Sub "${DataBucket.Arn}/*"
               - Sid: ListRunFiles
                 Effect: Allow
