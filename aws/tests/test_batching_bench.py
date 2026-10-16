@@ -45,3 +45,26 @@ def test_padding_ratio_is_the_share_of_wasted_positions():
 
 def test_identical_fraction():
     assert bb.identical_fraction(["a", "b", "c", "d"], ["a", "x", "c", "d"]) == 0.75
+
+
+def test_report_is_saved_and_uploaded_after_each_step(s3, tmp_path, monkeypatch):
+    # A run that dies part-way must still leave the finished steps in S3.
+    monkeypatch.setenv("BUCKET", "test-bucket")
+    monkeypatch.setenv("RUN_ID", "run-1")
+    out = tmp_path / "bench.json"
+    bb.save_report({"strategies": [{"name": "A_production"}]}, str(out))
+    assert out.exists()
+    body = s3.get_object(Bucket="test-bucket", Key="runs/run-1/bench/results.json")["Body"].read()
+    assert b"A_production" in body
+
+
+def test_report_is_only_saved_locally_without_bucket_settings(tmp_path, monkeypatch):
+    monkeypatch.delenv("BUCKET", raising=False)
+    out = tmp_path / "bench.json"
+    bb.save_report({"strategies": []}, str(out))
+    assert out.exists()
+
+
+def test_default_budgets_go_smaller_not_larger():
+    # 4096-token batches stopped the first benchmark run; the default sweep stays at or below production's 1024.
+    assert bb.parse_args(["--workload", "w", "--out", "o"]).budgets == [256, 512, 1024]

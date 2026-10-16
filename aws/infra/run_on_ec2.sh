@@ -4,7 +4,8 @@
 # its output goes to CloudWatch Logs, and the machine is terminated afterwards.
 # Settings (environment variables): AWS_REGION, STACK_NAME, RESET_TM (default true),
 # PHASE2_CPUSET (default 0,1), RUNNER_POLL_SECONDS (default 20),
-# RUNNER_TASK (pipeline = Phases 1-3, default; batching-bench = the batching benchmark).
+# RUNNER_TASK (pipeline = Phases 1-3, default; batching-bench = the batching benchmark),
+# RUNNER_TIMEOUT_SECONDS (default 7200).
 set -euo pipefail
 
 REGION="${AWS_REGION:-ap-south-1}"
@@ -13,6 +14,7 @@ RESET_TM="${RESET_TM:-true}"
 PHASE2_CPUSET="${PHASE2_CPUSET:-0,1}"
 POLL="${RUNNER_POLL_SECONDS:-20}"
 RUNNER_TASK="${RUNNER_TASK:-pipeline}"
+TIMEOUT="${RUNNER_TIMEOUT_SECONDS:-7200}"
 
 output() {
   aws cloudformation describe-stacks --region "$REGION" --stack-name "$STACK_NAME" \
@@ -69,13 +71,13 @@ test -x /opt/venv/bin/python || { echo 'Runner bootstrap failed (no /opt/venv)';
 mkdir -p /opt/run && cd /opt/run
 aws s3 cp s3://$BUCKET/runs/$RUN_ID/source.tar.gz - --region $REGION | tar -xz
 RUN_ID=$RUN_ID BUCKET=$BUCKET DB_HOST=$DB_HOST DB_SECRET_ARN='$DB_SECRET_ARN' AWS_REGION=$REGION RESET_TM=$RESET_TM PHASE2_CPUSET=$PHASE2_CPUSET RUNNER_TASK=$RUNNER_TASK bash aws/runner/run_all.sh"
-PARAMS="$(python3 -c 'import json, sys; print(json.dumps({"commands": [sys.argv[1]], "executionTimeout": ["7200"]}))' "$COMMAND")"
+PARAMS="$(python3 -c 'import json, sys; print(json.dumps({"commands": [sys.argv[1]], "executionTimeout": [sys.argv[2]]}))' "$COMMAND" "$TIMEOUT")"
 
 CMD_ID="$(aws ssm send-command --region "$REGION" --instance-ids "$INSTANCE_ID" --document-name AWS-RunShellScript \
   --comment "localization run $RUN_ID" --parameters "$PARAMS" \
   --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=$LOG_GROUP" \
   --query Command.CommandId --output text)"
-echo "🚀 Running Phases 1-3 for run $RUN_ID on $INSTANCE_ID. Live output: CloudWatch log group $LOG_GROUP"
+echo "🚀 Running $RUNNER_TASK for run $RUN_ID on $INSTANCE_ID. Live output: CloudWatch log group $LOG_GROUP"
 
 status="Pending"
 while :; do

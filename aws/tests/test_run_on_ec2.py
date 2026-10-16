@@ -100,3 +100,9 @@ def test_runner_task_is_passed_to_the_machine(run_on_ec2):
     result, _, _, params = run_on_ec2(RUNNER_TASK="batching-bench")
     assert result.returncode == 0, result.stdout + result.stderr
     assert "RUNNER_TASK=batching-bench" in json.loads(params.read_text())["commands"][0]
+
+
+def test_timeout_is_configurable_and_the_message_names_the_task(run_on_ec2):
+    result, _, _, params = run_on_ec2(RUNNER_TASK="batching-bench", RUNNER_TIMEOUT_SECONDS="10800")
+    assert json.loads(params.read_text())["executionTimeout"] == ["10800"]
+    assert "Running batching-bench" in result.stdout

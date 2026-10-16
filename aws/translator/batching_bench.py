@@ -10,6 +10,7 @@ starting from the fastest configuration found so far, so every gain can be trace
 import argparse
 import json
 import os
+import resource
 import tarfile
 import time
 import urllib.request
@@ -176,13 +177,39 @@ def load_flores(per_language):
     return read("eng_Latn"), {lang: read(code) for lang, code in NLLB_CODES.items()}
 
 
-def main(argv=None):
+def save_report(report, path):
+    """Write the report locally, and to s3://BUCKET/runs/RUN_ID/bench/results.json when those are set,
+    so the steps already finished survive if the run dies part-way."""
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
+    bucket, run_id = os.environ.get("BUCKET"), os.environ.get("RUN_ID")
+    if bucket and run_id:
+        try:
+            import boto3
+            boto3.client("s3").upload_file(path, bucket, f"runs/{run_id}/bench/results.json")
+        except Exception as error:
+            print(f"⚠️ Could not upload benchmark results: {error}", flush=True)
+
+
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--workload", required=True, help="Folder with the source .resx files.")
     parser.add_argument("--files", nargs="+", default=DEFAULT_FILES)
     parser.add_argument("--out", required=True)
+    parser.add_argument("--budgets", nargs="+", type=int, default=[256, 512, 1024],
+                        help="Token budgets for the sorted run-wide batching (run 1: 4096 stopped the run).")
+    parser.add_argument("--with-threads", action="store_true", help="Also time intra_threads=<cores> (run 1: no effect).")
+    parser.add_argument("--with-unsorted", action="store_true", help="Also time unsorted run-wide batching.")
     parser.add_argument("--flores-sentences", type=int, default=40)
-    args = parser.parse_args(argv)
+    return parser.parse_args(argv)
+
+
+def peak_memory_mb():
+    return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1)   # Linux reports KiB
+
+
+def main(argv=None):
+    args = parse_args(argv)
 
     import translation   # loads production's model and tokenizer exactly as Phase 2 does
     import aws_runtime
@@ -191,6 +218,8 @@ def main(argv=None):
     report = {"workload": {"files": args.files, "languages": LANGS, "pairs": len(pairs)},
               "machine": {"cpu_limit": aws_runtime.cpu_limit(), "host_cpu_count": os.cpu_count(),
                           "cpu_model": aws_runtime.cpu_model()},
+              "settings": {"budgets": args.budgets, "with_threads": args.with_threads,
+                           "with_unsorted": args.with_unsorted},
               "strategies": []}
     production = Engine(translation.translator, translation.tokenizer)
     production.translate_texts(["Warm up the model."], "de-DE")
@@ -200,13 +229,14 @@ def main(argv=None):
         entry = {"name": name, "change": change, "beam_size": beam_size, "seconds": round(seconds, 2),
                  "pairs_per_hour": round(len(pairs) / seconds * 3600),
                  "batches": len(batches), "avg_batch_pairs": round(len(pairs) / len(batches), 1),
-                 "padding_ratio": padding_ratio(batches, lengths)}
+                 "padding_ratio": padding_ratio(batches, lengths), "peak_memory_mb": peak_memory_mb()}
         if baseline is not None:
             entry["speedup_vs_baseline"] = round(report["strategies"][0]["seconds"] / seconds, 2)
             entry["identical_to_baseline"] = identical_fraction(outputs, baseline)
             entry["chrf_vs_baseline"] = chrf(outputs, baseline)
         report["strategies"].append(entry)
         print("BENCH_RESULT: " + json.dumps(entry), flush=True)
+        save_report(report, args.out)
         return entry
 
     # Sanity: the benchmark's Engine reproduces production's translate_local on one file and two languages.
@@ -222,27 +252,30 @@ def main(argv=None):
     record("A_production", "Today's pipeline: per file and language, 52 strings / 1024 chars-over-4, beam 5, default threads",
            baseline, seconds, batches)
 
-    # B: same, with CTranslate2 told how many cores it has.
-    cores = aws_runtime.cpu_limit()
-    threaded = Engine.load(translation.CT2_MODEL_PATH, translation.tokenizer, intra_threads=cores)
-    threaded.translate_texts(["Warm up the model."], "de-DE")
-    out, seconds, batches = run_per_file(pairs, lambda texts, lang: threaded.translate_texts(texts, lang))
-    b = record("B_threads", f"A + intra_threads={cores} (the cores the container may use)", out, seconds, batches, baseline)
-    engine = threaded if b["seconds"] < report["strategies"][0]["seconds"] else production
-    report["chosen_threads"] = cores if engine is threaded else "default"
+    engine = production
+    if args.with_threads:
+        cores = aws_runtime.cpu_limit()
+        threaded = Engine.load(translation.CT2_MODEL_PATH, translation.tokenizer, intra_threads=cores)
+        threaded.translate_texts(["Warm up the model."], "de-DE")
+        out, seconds, batches = run_per_file(pairs, lambda texts, lang: threaded.translate_texts(texts, lang))
+        b = record("B_threads", f"A + intra_threads={cores}", out, seconds, batches, baseline)
+        if b["seconds"] < report["strategies"][0]["seconds"]:
+            engine = threaded
 
-    # C-E: one run-wide plan by real token counts instead of one file and language at a time.
+    # Run-wide batching by real token counts, at each budget (sorted by length; unsorted only if asked).
     candidates = []
-    for name, change, max_tokens, sort in (
-            ("C_global", "all files and languages planned together, real tokens, 1024-token batches", 1024, False),
-            ("D_global_sorted", "C + sorted by length (less padding)", 1024, True),
-            ("E_global_sorted_4096", "D + 4096-token batches", 4096, True)):
-        out, seconds, batches = run_global(pairs, engine, max_tokens, sort, beam_size=5)
-        candidates.append((record(name, change, out, seconds, batches, baseline), max_tokens, sort))
+    if args.with_unsorted:
+        out, seconds, batches = run_global(pairs, engine, PROD_TOKEN_LIMIT, False, beam_size=5)
+        candidates.append((record("C_global", "all files and languages together, real tokens, 1024-token batches",
+                                  out, seconds, batches, baseline), PROD_TOKEN_LIMIT, False))
+    for budget in args.budgets:
+        out, seconds, batches = run_global(pairs, engine, budget, True, beam_size=5)
+        candidates.append((record(f"D_sorted_{budget}", f"all files and languages together, sorted by length, {budget}-token batches",
+                                  out, seconds, batches, baseline), budget, True))
     best, best_tokens, best_sort = min(candidates, key=lambda c: c[0]["seconds"])
     report["chosen_batching"] = best["name"]
 
-    # F-G: fewer beam candidates on the best batching.
+    # Fewer beam candidates on the best batching.
     for beam in (2, 1):
         out, seconds, batches = run_global(pairs, engine, best_tokens, best_sort, beam_size=beam)
         record(f"{'F' if beam == 2 else 'G'}_beam{beam}", f"{best['name']} + beam {beam}", out, seconds, batches,
@@ -261,11 +294,12 @@ def main(argv=None):
             report["flores"][f"beam{beam}"] = {"chrf_all": chrf(out, refs), "chrf_per_language": per_lang,
                                                 "seconds": round(seconds, 2)}
             print(f"FLORES beam {beam}: chrF {report['flores'][f'beam{beam}']['chrf_all']} in {seconds:.1f}s", flush=True)
+            save_report(report, args.out)
     except Exception as error:   # quality check is best-effort; timing results still stand
         report["flores"] = {"error": str(error)}
 
-    with open(args.out, "w", encoding="utf-8") as f:
-        json.dump(report, f, indent=2, ensure_ascii=False)
+    report["complete"] = True
+    save_report(report, args.out)
     print(f"Wrote {args.out}", flush=True)
     return 0
 
