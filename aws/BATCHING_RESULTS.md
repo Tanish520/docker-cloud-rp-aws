@@ -51,3 +51,55 @@ What the live AWS run (`ec2-20261015t233954z`) showed:
 - There was no memory reading. Each step now records peak memory.
 - Steps couldn't be skipped. Batch budgets and the thread/unsorted steps are now options; run 2 tries **smaller** budgets (256, 512, 1024) instead of larger.
 - The SSM time limit is now configurable (`RUNNER_TIMEOUT_SECONDS`).
+
+## 4. Benchmark run 2 — `ec2-20261016t103748z` (2026-10-16)
+
+Same machine type, workload and method. Steps B (threads) and C (unsorted) were skipped because run 1 showed no effect from them, and the batch budgets went smaller instead of larger. The run completed; the engine sanity check matched production on 100/100 strings.
+
+| Step | Change (one at a time) | Beam | Time (s) | Translations/hour | Speed-up | Batches | Padding | Peak memory | Identical to A | chrF vs A |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| A | Today's pipeline (baseline) | 5 | 434.84 | 8,867 | 1.00× | 21 | 30.1% | 1.8 GB | — | — |
+| D-256 | Run-wide, sorted, 256-token batches | 5 | 451.10 | 8,547 | 0.96× | 37 | 1.2% | 1.8 GB | 100% | 100.0 |
+| D-512 | Run-wide, sorted, 512-token batches | 5 | 432.62 | 8,912 | 1.01× | 19 | 2.4% | 2.2 GB | 100% | 100.0 |
+| D-1024 | Run-wide, sorted, 1024-token batches | 5 | 425.78 | 9,055 | 1.02× | 10 | 4.3% | 3.5 GB | 100% | 100.0 |
+| **F** | D-1024 + **beam 2** | 2 | **188.08** | 20,500 | **2.31×** | 10 | 4.3% | 3.5 GB | 77% | 92.5 |
+| **G** | D-1024 + **beam 1** | 1 | **103.58** | 37,224 | **4.20×** | 10 | 4.3% | 3.5 GB | 59% | 86.1 |
+
+**Quality against human references** (FLORES-200 dev, first 40 sentences per language, chrF; higher is better):
+
+| Beam | All 7 | de-DE | es-ES | fr-FR | hi-IN | ja-JP | ru-RU | zh-CN | FLORES time |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 5 (today) | **56.69** | 62.71 | 55.54 | 68.75 | 57.65 | 33.83 | 58.35 | 28.58 | 400.1 s |
+| 2 | 55.82 (−0.87) | 61.93 | 55.63 | 67.05 | 56.98 | 34.77 | 56.71 | 26.32 | 186.3 s |
+| 1 | 55.29 (−1.40) | 60.08 | 55.73 | 67.76 | 55.03 | 33.39 | 57.33 | 25.07 | 109.6 s |
+
+The "chrF vs A" column in the main table compares against today's *output*, not against a human translation. It only says how much the text changed. The FLORES table is the quality measure.
+
+## 5. What we learned
+
+1. **Batching layout is not the bottleneck.**
+   - Run-wide batching, length sorting and any budget from 256 to 1024 tokens moved time by −4% to +2%, while padding went from 30% to 1–4%.
+   - These changes never altered a single translation.
+   - Run-to-run noise on identical work is about 2% (step A: 445 s in run 1, 435 s in run 2), so differences that small are not meaningful.
+2. **Beam size is the bottleneck.**
+   - Decoding 5 candidates per string is where the time goes.
+   - Beam 2 is **2.3× faster** on our strings (2.15× on FLORES), for −0.87 chrF.
+   - Beam 1 is **4.2× faster** (3.65× on FLORES), for −1.40 chrF.
+   - The losses are largest for zh-CN (−2.3 and −3.5) and de-DE (−0.8 and −2.6). es-ES and ja-JP are unchanged or slightly better.
+3. **Big batches cost memory without saving time.**
+   - Peak memory rose from 1.8 GB (production-size batches) to 2.2 GB at 512 tokens and 3.5 GB at 1024.
+   - That trend makes it likely that run 1's 4096-token step ran the 8 GB machine out of memory. This is not proven, because no out-of-memory message was captured.
+4. **Telling CTranslate2 the core count does nothing.** It already uses the 2 pinned cores (run 1, step B).
+
+**Limits of these results:**
+- The quality numbers use 40 FLORES sentences per language, so differences under about 1 chrF may be noise. Confirm the chosen beam with the Track 1 metric suite (BLEU, chrF, COMET) on the full KDE4 test set before publishing.
+- Timings are for inference on one m5.large.
+
+## 6. Recommendation
+
+- **Change the beam size, not the batching.**
+  - **Beam 2** is the balanced choice: about 2.3× faster for under 1 chrF point overall.
+  - **Beam 1** suits speed-first runs, about 4× faster, if the zh-CN/de-DE loss is acceptable after the full quality check.
+- **Keep production's simple per-file batching.** Run-wide sorted batching gave at most 2% and roughly doubles peak memory, so it is not worth the complexity on its own.
+- **Never use batches above about 1024 tokens** on this 8 GB machine.
+- **Expected effect on the pipeline:** inference is 99% of Phase 2 time, so a 50-string file should drop from about 21 s to about 9 s at beam 2, and about 5 s at beam 1. Confirm with a full pipeline run after the change.
