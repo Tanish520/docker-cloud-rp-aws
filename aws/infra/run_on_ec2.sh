@@ -3,7 +3,8 @@
 # The last commit is uploaded to S3, the machine runs aws/runner/run_all.sh through SSM,
 # its output goes to CloudWatch Logs, and the machine is terminated afterwards.
 # Settings (environment variables): AWS_REGION, STACK_NAME, RESET_TM (default true),
-# PHASE2_CPUSET (default 0,1), RUNNER_POLL_SECONDS (default 20).
+# PHASE2_CPUSET (default 0,1), RUNNER_POLL_SECONDS (default 20),
+# RUNNER_TASK (pipeline = Phases 1-3, default; batching-bench = the batching benchmark).
 set -euo pipefail
 
 REGION="${AWS_REGION:-ap-south-1}"
@@ -11,6 +12,7 @@ STACK_NAME="${STACK_NAME:-cloud-loc}"
 RESET_TM="${RESET_TM:-true}"
 PHASE2_CPUSET="${PHASE2_CPUSET:-0,1}"
 POLL="${RUNNER_POLL_SECONDS:-20}"
+RUNNER_TASK="${RUNNER_TASK:-pipeline}"
 
 output() {
   aws cloudformation describe-stacks --region "$REGION" --stack-name "$STACK_NAME" \
@@ -66,7 +68,7 @@ cloud-init status --wait >/dev/null || true
 test -x /opt/venv/bin/python || { echo 'Runner bootstrap failed (no /opt/venv)'; exit 1; }
 mkdir -p /opt/run && cd /opt/run
 aws s3 cp s3://$BUCKET/runs/$RUN_ID/source.tar.gz - --region $REGION | tar -xz
-RUN_ID=$RUN_ID BUCKET=$BUCKET DB_HOST=$DB_HOST DB_SECRET_ARN='$DB_SECRET_ARN' AWS_REGION=$REGION RESET_TM=$RESET_TM PHASE2_CPUSET=$PHASE2_CPUSET bash aws/runner/run_all.sh"
+RUN_ID=$RUN_ID BUCKET=$BUCKET DB_HOST=$DB_HOST DB_SECRET_ARN='$DB_SECRET_ARN' AWS_REGION=$REGION RESET_TM=$RESET_TM PHASE2_CPUSET=$PHASE2_CPUSET RUNNER_TASK=$RUNNER_TASK bash aws/runner/run_all.sh"
 PARAMS="$(python3 -c 'import json, sys; print(json.dumps({"commands": [sys.argv[1]], "executionTimeout": ["7200"]}))' "$COMMAND")"
 
 CMD_ID="$(aws ssm send-command --region "$REGION" --instance-ids "$INSTANCE_ID" --document-name AWS-RunShellScript \
@@ -91,6 +93,10 @@ if [ "$status" != "Success" ]; then
   aws ssm get-command-invocation --region "$REGION" --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
     --query StandardErrorContent --output text || true
   exit 1
+fi
+if [ "$RUNNER_TASK" = "batching-bench" ]; then
+  echo "Benchmark results: s3://$BUCKET/runs/$RUN_ID/bench/results.json"
+  exit 0
 fi
 echo "Results: s3://$BUCKET/runs/$RUN_ID/output/"
 echo "Telemetry: aws/.venv/bin/python aws/tools/export_telemetry.py --run-id $RUN_ID --log-group $LOG_GROUP --out $RUN_ID.csv"

@@ -11,6 +11,7 @@ set -euo pipefail
 : "${MODEL_KEY:?MODEL_KEY must be set}"
 PHASE2_CPUSET="${PHASE2_CPUSET:-0,1}"
 RESET_TM="${RESET_TM:-true}"
+PHASE2_TASK="${PHASE2_TASK:-translate}"   # translate | bench
 export DB_NAME="${DB_NAME:-localization}"
 
 IMAGE="local-ai-translator"
@@ -68,6 +69,18 @@ else
   convert_model
   model_loads
   python aws/model_cache.py publish --dir "$MODEL_DIR"
+fi
+
+if [ "$PHASE2_TASK" = "bench" ]; then
+  # Batching benchmark: inference only, same image, model and cores as production; no database needed.
+  echo "📏 Running the batching benchmark on cores $PHASE2_CPUSET..."
+  docker run --rm --cpuset-cpus="$PHASE2_CPUSET" "${DOCKER_ENV[@]}" -v "$TRANSLATOR_DIR:/app" \
+    -v "$(pwd)/source-folder:/workload:ro" "$IMAGE" \
+    bash -c 'pip install --quiet --no-cache-dir "sacrebleu==2.4.3" && python batching_bench.py --workload /workload --out bench-results.json' \
+    2>&1 | tee phase2.log
+  aws s3 cp "$TRANSLATOR_DIR/bench-results.json" "s3://$BUCKET/runs/$RUN_ID/bench/results.json" --only-show-errors
+  echo "✅ Benchmark results: s3://$BUCKET/runs/$RUN_ID/bench/results.json"
+  exit 0
 fi
 
 echo "🗄️ Preparing translation memory database..."

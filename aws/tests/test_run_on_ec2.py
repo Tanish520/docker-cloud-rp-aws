@@ -94,3 +94,9 @@ def test_missing_runner_stack_outputs_stop_before_launching(run_on_ec2):
     result, calls, _, _ = run_on_ec2(STUB_NO_RUNNER="1")
     assert result.returncode != 0
     assert not any("run-instances" in c for c in calls)
+
+
+def test_runner_task_is_passed_to_the_machine(run_on_ec2):
+    result, _, _, params = run_on_ec2(RUNNER_TASK="batching-bench")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "RUNNER_TASK=batching-bench" in json.loads(params.read_text())["commands"][0]

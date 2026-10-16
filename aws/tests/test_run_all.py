@@ -20,7 +20,7 @@ with open(os.environ["STUB_LOG"], "a") as log:
 sys.exit(int(os.environ.get("STUB_{upper}_EXIT", "0")))
 """
 PHASE2_SH = """#!/bin/bash
-echo "phase2 MODEL_KEY=$MODEL_KEY DB_USER=$DB_USER DB_PASSWORD=$DB_PASSWORD RESET_TM=$RESET_TM CPUSET=$PHASE2_CPUSET REGION=$AWS_DEFAULT_REGION" >> "$STUB_LOG"
+echo "phase2 MODEL_KEY=$MODEL_KEY DB_USER=$DB_USER DB_PASSWORD=$DB_PASSWORD RESET_TM=$RESET_TM CPUSET=$PHASE2_CPUSET REGION=$AWS_DEFAULT_REGION TASK=${PHASE2_TASK:-}" >> "$STUB_LOG"
 """
 
 
@@ -79,3 +79,10 @@ def test_missing_settings_fail_before_any_phase(run_all):
 def test_database_password_is_never_printed(run_all):
     result, _ = run_all()
     assert "p;a}ss" not in result.stdout + result.stderr
+
+
+def test_batching_bench_task_runs_only_phase_2_in_benchmark_mode(run_all):
+    result, calls = run_all(RUNNER_TASK="batching-bench")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert [c.split()[0] for c in calls] == ["phase2"]
+    assert calls[0].endswith("TASK=bench")

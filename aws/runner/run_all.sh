@@ -29,6 +29,15 @@ if [ -z "$MODEL_KEY" ]; then
 fi
 export MODEL_KEY
 
+case "${RUNNER_TASK:-pipeline}" in
+  pipeline) ;;
+  batching-bench)
+    echo "=== Batching benchmark (run $RUN_ID) ==="
+    PHASE2_TASK=bench bash aws/scripts/run_phase2.sh
+    exit 0 ;;
+  *) echo "❌ Unknown RUNNER_TASK: ${RUNNER_TASK}"; exit 1 ;;
+esac
+
 echo "=== Phase 1: extract (run $RUN_ID) ==="
 python3 aws/phase1.py aws/config.json
 echo "=== Phase 2: translate ==="

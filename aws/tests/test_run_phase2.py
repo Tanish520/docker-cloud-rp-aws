@@ -99,3 +99,12 @@ def test_unreachable_s3_stops_before_any_model_or_translation_work(run_phase2):
 def test_translation_failure_fails_the_script_despite_tee(run_phase2):
     result, _ = run_phase2(STUB_TRANSLATE_EXIT="7")
     assert result.returncode != 0
+
+
+def test_bench_task_skips_the_database_and_uploads_benchmark_results(run_phase2):
+    result, calls = run_phase2(PHASE2_TASK="bench")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not any("db_admin.py" in c or "translation.py" in c for c in calls)
+    [bench] = [c for c in calls if "batching_bench.py" in c]
+    assert "--cpuset-cpus=0,1" in bench and "/workload:ro" in bench
+    assert any(c.startswith("aws s3 cp") and "s3://bucket/runs/run-1/bench/results.json" in c for c in calls)
