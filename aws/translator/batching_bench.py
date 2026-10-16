@@ -18,6 +18,8 @@ import time
 import urllib.request
 import xml.etree.ElementTree as ET
 
+from batching import decoding_cap, plan_token_batches
+
 LANGS = ["de-DE", "es-ES", "fr-FR", "hi-IN", "ja-JP", "ru-RU", "zh-CN"]   # production order (sorted blob names)
 NLLB_CODES = {"de-DE": "deu_Latn", "es-ES": "spa_Latn", "fr-FR": "fra_Latn", "hi-IN": "hin_Deva",
               "ja-JP": "jpn_Jpan", "ru-RU": "rus_Cyrl", "zh-CN": "zho_Hans"}
@@ -56,21 +58,6 @@ def plan_production_batches(texts):
             current, tokens = [], 0.0
         current.append(i)
         tokens += estimate
-    if current:
-        batches.append(current)
-    return batches
-
-
-def plan_token_batches(lengths, max_tokens, sort):
-    """Cut items into batches of at most max_tokens real tokens; optionally shortest-first."""
-    order = sorted(range(len(lengths)), key=lambda i: lengths[i]) if sort else list(range(len(lengths)))
-    batches, current, used = [], [], 0
-    for i in order:
-        if current and used + lengths[i] > max_tokens:
-            batches.append(current)
-            current, used = [], 0
-        current.append(i)
-        used += lengths[i]
     if current:
         batches.append(current)
     return batches
@@ -118,11 +105,6 @@ def placeholder_kept_fraction(sources, outputs):
         return None
     kept = sum(sorted(PLACEHOLDER.findall(s)) == sorted(PLACEHOLDER.findall(o)) for s, o in checked)
     return round(kept / len(checked), 4)
-
-
-def decoding_cap(batch_lengths, factor=2, extra=10, limit=256):
-    """Longest output allowed for a batch: factor x its longest source + extra, never above CTranslate2's default."""
-    return min(limit, factor * max(batch_lengths) + extra)
 
 
 def cpu_utilization(cpu_seconds, wall_seconds, cores):

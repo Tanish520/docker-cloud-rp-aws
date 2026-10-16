@@ -262,17 +262,19 @@ class WordTokenizer:
 
 
 class FakeModel:
-    """Translates with `rule(source text)` and records every text it was given."""
+    """Translates with `rule(source text)`; records every text and every batch it was given."""
 
     def __init__(self, rule):
-        self.rule, self.seen = rule, []
+        self.rule, self.seen, self.batches = rule, [], []
 
-    def translate_batch(self, batch, target_prefix, **kwargs):
+    def translate_batch(self, batch, target_prefix, **options):
+        self.batches.append(([" ".join(tokens) for tokens in batch], target_prefix, options))
         results = []
         for tokens, prefix in zip(batch, target_prefix):
             source = " ".join(tokens)
             self.seen.append(source)
-            results.append(types.SimpleNamespace(hypotheses=[prefix + self.rule(source).split()]))
+            result = types.SimpleNamespace(hypotheses=[prefix + self.rule(source).split()])
+            results.append(types.SimpleNamespace(result=lambda r=result: r) if options.get("asynchronous") else result)
         return results
 
 
@@ -288,7 +290,7 @@ def test_placeholders_are_masked_for_the_model_and_put_back(translation, monkeyp
 
     translations, _, _ = translation.translate_local(["Open %1 now", "Open now"], "fr-FR")
 
-    assert model.seen == ["Open [0] now", "Open now"]
+    assert sorted(model.seen) == ["Open [0] now", "Open now"]
     assert translations == ["Ouvrir %1 maintenant", "Ouvrir maintenant"]
 
 
@@ -298,5 +300,104 @@ def test_a_lost_marker_falls_back_to_the_unmasked_translation(translation, monke
 
     translations, _, _ = translation.translate_local(["Copy [3] %1 to %2", "Copy %1 to %2"], "de-DE")
 
-    assert model.seen == ["Copy [3] %1 to %2", "Copy [0] to [1]", "Copy %1 to %2"]
+    assert sorted(model.seen[:2]) == ["Copy [0] to [1]", "Copy [3] %1 to %2"]
+    assert model.seen[2:] == ["Copy %1 to %2"]
     assert translations == ["Kopiere [3] %1 to %2", "Kopiere %1 to %2"]
+
+
+def test_model_works_on_two_batches_at_once_one_per_core(translation):
+    assert translation.translator.kwargs == {"device": "auto", "compute_type": "int8",
+                                             "inter_threads": 2, "intra_threads": 1}
+
+
+def test_strings_are_batched_shortest_first_and_queued_together(translation, monkeypatch):
+    model = use_model(translation, monkeypatch, lambda s: s.upper())
+    monkeypatch.setattr(translation, "TOKEN_LIMIT", 5)
+
+    texts = ["c c c", "a", "d d d d", "b b"]
+    translations, _, _ = translation.translate_local(texts, "es-ES")
+
+    assert [sources for sources, _, _ in model.batches] == [["a", "b b"], ["c c c"], ["d d d d"]]
+    assert [options for _, _, options in model.batches] == [
+        {"beam_size": 2, "max_decoding_length": 2 * 2 + 10, "asynchronous": True},
+        {"beam_size": 2, "max_decoding_length": 2 * 3 + 10, "asynchronous": True},
+        {"beam_size": 2, "max_decoding_length": 2 * 4 + 10, "asynchronous": True},
+    ]
+    assert translations == ["C C C", "A", "D D D D", "B B"]          # back in the caller's order
+
+
+def test_engine_batches_are_counted(translation, monkeypatch):
+    use_model(translation, monkeypatch, lambda s: s)
+    monkeypatch.setattr(translation, "TOKEN_LIMIT", 2)
+    translation.profiler.counters["total_batches"] = 0
+
+    translation.translate_local(["a b", "c d", "e"], "es-ES")
+
+    assert translation.profiler.counters["total_batches"] == 3
+
+
+def test_punjabi_targets_its_nllb_language(translation, monkeypatch):
+    model = use_model(translation, monkeypatch, lambda s: s)
+    translation.translate_local(["Open"], "pa-IN")
+    assert model.batches[0][1] == [["pan_Guru"]]
+
+
+class RecordingCursor:
+    def __init__(self):
+        self.saved = []
+        self.fast_executemany = False
+
+    def execute(self, query, params):
+        pass
+
+    def fetchall(self):
+        return []                                   # empty translation memory
+
+    def executemany(self, query, rows):
+        self.saved.extend(row[0] for row in rows)
+
+
+class RecordingConn:
+    def __init__(self):
+        self.cursor_ = RecordingCursor()
+
+    def cursor(self):
+        return self.cursor_
+
+    def commit(self):
+        pass
+
+
+def xlf_with(tmp_path, sources):
+    units = "".join(f'<trans-unit id="S{i}"><source>{text}</source><target /></trans-unit>' for i, text in enumerate(sources))
+    path = tmp_path / "kde4.es-ES.xlf"
+    path.write_text(f"<xliff version=\"1.2\"><file><body>{units}</body></file></xliff>", encoding="utf-8")
+    return path
+
+
+def targets(path):
+    import xml.etree.ElementTree as ET
+    return [unit.find("target").text for unit in ET.parse(path).getroot().iter("trans-unit")]
+
+
+def test_file_is_translated_in_chunks_of_similar_length(translation, monkeypatch, tmp_path):
+    model = use_model(translation, monkeypatch, lambda s: s.upper())
+    monkeypatch.setattr(translation, "CHUNK_SIZE", 2)
+    path = xlf_with(tmp_path, ["c c c", "a", "d d d d", "b b"])
+
+    asyncio.run(translation.process_xlf_file(str(path), "es-ES", RecordingConn(), None))
+
+    assert [sources for sources, _, _ in model.batches] == [["a", "b b"], ["c c c", "d d d d"]]
+    assert targets(path) == ["C C C", "A", "D D D D", "B B"]
+
+
+def test_strings_too_long_for_the_memory_key_are_translated_but_not_saved(translation, monkeypatch, tmp_path):
+    use_model(translation, monkeypatch, lambda s: s.upper())
+    monkeypatch.setattr(translation, "TM_KEY_LIMIT", 5)
+    conn = RecordingConn()
+    path = xlf_with(tmp_path, ["short", "much longer"])
+
+    asyncio.run(translation.process_xlf_file(str(path), "es-ES", conn, None))
+
+    assert targets(path) == ["SHORT", "MUCH LONGER"]
+    assert conn.cursor_.saved == ["short"]

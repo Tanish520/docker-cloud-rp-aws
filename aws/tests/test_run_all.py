@@ -11,6 +11,7 @@ RUN_ALL = AWS_DIR / "runner" / "run_all.sh"
 AWS_STUB = r"""#!/bin/bash
 case "$*" in
   "secretsmanager get-secret-value"*) printf '%s\n' "$STUB_SECRET" ;;
+  "s3 cp "*) echo "aws $*" >> "$STUB_LOG"; printf '<root/>' > "$4" ;;
   *) exit 1 ;;
 esac
 """
@@ -20,7 +21,7 @@ with open(os.environ["STUB_LOG"], "a") as log:
 sys.exit(int(os.environ.get("STUB_{upper}_EXIT", "0")))
 """
 PHASE2_SH = """#!/bin/bash
-echo "phase2 MODEL_KEY=$MODEL_KEY DB_USER=$DB_USER DB_PASSWORD=$DB_PASSWORD RESET_TM=$RESET_TM CPUSET=$PHASE2_CPUSET REGION=$AWS_DEFAULT_REGION TASK=${PHASE2_TASK:-}" >> "$STUB_LOG"
+echo "phase2 MODEL_KEY=$MODEL_KEY DB_USER=$DB_USER DB_PASSWORD=$DB_PASSWORD RESET_TM=$RESET_TM CPUSET=$PHASE2_CPUSET REGION=$AWS_DEFAULT_REGION CONFIG=$PIPELINE_CONFIG TASK=${PHASE2_TASK:-}" >> "$STUB_LOG"
 """
 
 
@@ -86,3 +87,19 @@ def test_batching_bench_task_runs_only_phase_2_in_benchmark_mode(run_all):
     assert result.returncode == 0, result.stdout + result.stderr
     assert [c.split()[0] for c in calls] == ["phase2"]
     assert calls[0].endswith("TASK=bench")
+
+
+def test_phases_use_the_chosen_config(run_all):
+    result, calls = run_all(PIPELINE_CONFIG="aws/config.kde4.json")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert calls[0] == "phase1 aws/config.kde4.json"
+    assert "CONFIG=aws/config.kde4.json" in calls[1]
+    assert calls[2] == "phase3 aws/config.kde4.json"
+
+
+def test_input_file_is_fetched_into_the_source_folder_before_phase_1(run_all, tmp_path):
+    result, calls = run_all(INPUT_S3="s3://bucket/datasets/kde4/kde4.resx")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert calls[0] == "aws s3 cp s3://bucket/datasets/kde4/kde4.resx source-folder/kde4.resx --only-show-errors"
+    assert calls[1].startswith("phase1 ")
+    assert (tmp_path / "src" / "source-folder" / "kde4.resx").exists()

@@ -14,6 +14,7 @@ RESET_TM="${RESET_TM:-true}"
 PHASE2_TASK="${PHASE2_TASK:-translate}"   # translate | bench
 export BENCH_ARGS="${BENCH_ARGS:-}"      # extra batching_bench.py options, e.g. --kde4 s3://...
 export DB_NAME="${DB_NAME:-localization}"
+PIPELINE_CONFIG="${PIPELINE_CONFIG:-aws/config.json}"
 
 IMAGE="local-ai-translator"
 BASE_IMAGE="public.ecr.aws/docker/library/python:3.10-slim-bookworm"
@@ -50,7 +51,7 @@ convert_model() {
 }
 
 echo "🐳 Building translator image..."
-cp aws/config.json "$TRANSLATOR_DIR/config.json"
+cp "$PIPELINE_CONFIG" "$TRANSLATOR_DIR/config.json"
 docker build -t "$IMAGE" "$TRANSLATOR_DIR"
 
 # Check S3 access from inside the container now, before ~15 minutes of model work.

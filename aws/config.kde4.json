@@ -1,0 +1,6 @@
+{
+  "SourceRepoPath": "source-folder",
+  "InputFiles": ["kde4.resx"],
+  "TargetLanguages": ["ar-SA", "bn-IN", "de-DE", "es-ES", "fr-FR", "hi-IN", "ja-JP", "mr-IN", "pa-IN", "ta-IN", "te-IN", "zh-CN"],
+  "TargetResxPath": "localized"
+}

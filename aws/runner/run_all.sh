@@ -13,6 +13,8 @@ export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-$AWS_REGION}"
 export RESET_TM="${RESET_TM:-true}"
 export PHASE2_CPUSET="${PHASE2_CPUSET:-0,1}"
 export DB_NAME="${DB_NAME:-localization}"
+export PIPELINE_CONFIG="${PIPELINE_CONFIG:-aws/config.json}"
+INPUT_S3="${INPUT_S3:-}"
 
 # boto3 and a plain `python` command come from the venv the instance bootstrap creates.
 if [ -d /opt/venv/bin ]; then export PATH="/opt/venv/bin:$PATH"; fi
@@ -38,10 +40,14 @@ case "${RUNNER_TASK:-pipeline}" in
   *) echo "❌ Unknown RUNNER_TASK: ${RUNNER_TASK}"; exit 1 ;;
 esac
 
+if [ -n "$INPUT_S3" ]; then
+  mkdir -p source-folder
+  aws s3 cp "$INPUT_S3" "source-folder/$(basename "$INPUT_S3")" --only-show-errors
+fi
 echo "=== Phase 1: extract (run $RUN_ID) ==="
-python3 aws/phase1.py aws/config.json
+python3 aws/phase1.py "$PIPELINE_CONFIG"
 echo "=== Phase 2: translate ==="
 bash aws/scripts/run_phase2.sh
 echo "=== Phase 3: merge ==="
-python3 aws/phase3.py aws/config.json
+python3 aws/phase3.py "$PIPELINE_CONFIG"
 echo "✅ Run $RUN_ID finished: s3://$BUCKET/runs/$RUN_ID/output/"

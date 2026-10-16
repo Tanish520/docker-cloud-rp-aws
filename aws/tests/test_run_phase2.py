@@ -115,3 +115,11 @@ def test_bench_task_passes_benchmark_arguments_into_the_container(run_phase2):
     assert result.returncode == 0, result.stdout + result.stderr
     [bench] = [c for c in calls if "batching_bench.py" in c]
     assert "-e BENCH_ARGS" in bench and "$BENCH_ARGS" in bench
+
+
+def test_translator_gets_the_chosen_config(run_phase2, tmp_path):
+    (tmp_path / "repo" / "aws" / "config.kde4.json").write_text('{"InputFiles": ["kde4.resx"]}', encoding="utf-8")
+    result, _ = run_phase2(PIPELINE_CONFIG="aws/config.kde4.json")
+    assert result.returncode == 0, result.stdout + result.stderr
+    copied = tmp_path / "repo" / "aws" / "translator" / "config.json"
+    assert copied.read_text(encoding="utf-8") == '{"InputFiles": ["kde4.resx"]}'

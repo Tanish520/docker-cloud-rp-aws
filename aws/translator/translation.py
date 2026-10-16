@@ -21,6 +21,7 @@ from transformers import AutoTokenizer
 import aws_runtime
 from s3_store import RunStore
 from placeholders import protect, restore
+from batching import decoding_cap, plan_token_batches
 from opencensus.ext.azure.log_exporter import AzureLogHandler
 from opencensus.ext.azure import metrics_exporter
 from opencensus.stats import aggregation as aggregation_module
@@ -30,13 +31,16 @@ from opencensus.stats import view as view_module
 from opencensus.tags import tag_map as tag_map_module
 
 # --- 1. CONFIGURATION ---
-BATCH_SIZE = 52
-TOKEN_LIMIT = 1024
+TOKEN_LIMIT = 1024    # most real tokens per model batch (and per string, after truncation)
+CHUNK_SIZE = 1000     # strings per model call; the memory is saved and progress printed after each
+BEAM_SIZE = 2         # 2.2x faster than 5 for -0.45 chrF on KDE4 (BATCHING_RESULTS.md section 8)
+ENGINE_WORKERS = 2    # batches translated at once, one per pinned core (PHASE2_CPUSET=0,1)
+TM_KEY_LIMIT = 434    # longest SourceText the memory's key holds (db_admin.py)
 
 LANG_TOKEN_MULTIPLIERS = {
     "zh-CN": 1.2, "ja-JP": 1.1, "ru-RU": 0.5, "hi-IN": 0.3, 
     "te-IN": 0.2, "fr-FR": 0.9, "es-ES": 0.9, "de-DE": 0.8, "ar-SA": 0.4,
-    "ta-IN": 0.2, "mr-IN": 0.3, "bn-IN": 0.3, "kn-IN": 0.2
+    "ta-IN": 0.2, "mr-IN": 0.3, "bn-IN": 0.3, "kn-IN": 0.2, "pa-IN": 0.3
 }
 
 # --- PRE-LOAD LOCAL CTRANSLATE2 ENGINE ---
@@ -50,7 +54,8 @@ try:
     # 1. Load the lightweight tokenizer rules from Hugging Face (~5MB)
     tokenizer = AutoTokenizer.from_pretrained(HF_MODEL_NAME)
     # Load C++ engine natively. We use "auto" device to detect CPU/GPU and int8 for max speed/lowest memory.
-    translator = ctranslate2.Translator(CT2_MODEL_PATH, device="auto", compute_type="int8")
+    translator = ctranslate2.Translator(CT2_MODEL_PATH, device="auto", compute_type="int8",
+                                       inter_threads=ENGINE_WORKERS, intra_threads=1)
     print("✅ Model loaded successfully into CTranslate2 C++ Backend.")
 except Exception as e:
     print(f"❌ Failed to load CTranslate2 model. Did you run ct2-transformers-converter? Error: {e}")
@@ -229,7 +234,7 @@ def translate_local(texts, target_lang):
         "fr-FR": "fra_Latn", "hi-IN": "hin_Deva", "ja-JP": "jpn_Jpan", "ru-RU": "rus_Cyrl",
         "zh-CN": "zho_Hans", "it-IT": "ita_Latn", "nl-NL": "nld_Latn", "pt-BR": "por_Latn",
         "ta-IN": "tam_Taml", "te-IN": "tel_Telu", "mr-IN": "mar_Deva", "bn-IN": "ben_Beng",
-        "kn-IN": "kan_Knda"
+        "kn-IN": "kan_Knda", "pa-IN": "pan_Guru"
     }
     tgt_token = lang_map.get(target_lang, "eng_Latn")
     
@@ -243,25 +248,32 @@ def translate_local(texts, target_lang):
             for text in batch:
                 encoded_ids = tokenizer.encode(text, truncation=True, max_length=TOKEN_LIMIT)
                 source_tokens.append(tokenizer.convert_ids_to_tokens(encoded_ids))
+            lengths = [len(tokens) for tokens in source_tokens]
 
-            # 2. Pure C++ Engine Inference
-            results = translator.translate_batch(
-                source_tokens,
-                target_prefix=[[tgt_token]] * len(batch),
-                beam_size=5, # Optimally fast while maintaining quality
-                batch_type="tokens", # Dynamic padding removal
-                max_batch_size=1024
-            )
+            # 2. Shortest-first batches of at most TOKEN_LIMIT tokens (little padding), all queued at
+            # once so both engine workers stay busy. Output is capped at 2x the longest input + 10
+            # tokens so one runaway string cannot hold up its batch (BATCHING_RESULTS.md section 9).
+            pending = []
+            for group in plan_token_batches(lengths, TOKEN_LIMIT):
+                pending.append((group, translator.translate_batch(
+                    [source_tokens[i] for i in group],
+                    target_prefix=[[tgt_token]] * len(group),
+                    beam_size=BEAM_SIZE,
+                    max_decoding_length=decoding_cap([lengths[i] for i in group]),
+                    asynchronous=True
+                )))
+            profiler.counters["total_batches"] += len(pending)
 
-            # 3. Detokenize back to string (Fast CPU op)
-            out = []
-            for result in results:
-                # Drop the language token prefix from the beginning
-                target_tokens = result.hypotheses[0][1:]
+            # 3. Detokenize back to string (Fast CPU op), in the caller's order
+            out = [None] * len(batch)
+            for group, futures in pending:
+                for i, future in zip(group, futures):
+                    # Drop the language token prefix from the beginning
+                    target_tokens = future.result().hypotheses[0][1:]
 
-                # CRITICAL FIX: Skip special tokens so </s> doesn't leak into the translation
-                token_ids = tokenizer.convert_tokens_to_ids(target_tokens)
-                out.append(tokenizer.decode(token_ids, skip_special_tokens=True))
+                    # CRITICAL FIX: Skip special tokens so </s> doesn't leak into the translation
+                    token_ids = tokenizer.convert_tokens_to_ids(target_tokens)
+                    out[i] = tokenizer.decode(token_ids, skip_special_tokens=True)
             return out
 
         # Placeholders (%1, {name}, <b>) go to the model as [0], [1], ... which it copies far more
@@ -347,7 +359,6 @@ async def process_xlf_file(local_path, target_lang, conn, exporter):
         nonlocal total_translated_chars, current_batch_texts, current_batch_indices, current_batch_tokens
         if not current_batch_texts: return
         
-        profiler.counters["total_batches"] += 1 
         translations, batch_latency, _ = await translate_local_async(current_batch_texts, target_lang)
         file_stats["total_api_time_ms"] += batch_latency
         
@@ -382,7 +393,8 @@ async def process_xlf_file(local_path, target_lang, conn, exporter):
                         target_node.text = trans
                     
                     src = current_batch_texts[b_idx]
-                    db_write_batch.append((src, target_lang, trans, src, target_lang, trans, "nllb-600M-ct2"))
+                    if len(src) <= TM_KEY_LIMIT:  # a longer key would fail the whole save
+                        db_write_batch.append((src, target_lang, trans, src, target_lang, trans, "nllb-600M-ct2"))
                     
                     multiplier = LANG_TOKEN_MULTIPLIERS.get(target_lang, 0.5)
                     output_tokens = len(trans) / (4.0 * multiplier)
@@ -407,17 +419,14 @@ async def process_xlf_file(local_path, target_lang, conn, exporter):
         current_batch_indices.clear()
         current_batch_tokens = 0
 
-    for idx_in_list, (original_unit_idx, source_text) in enumerate(missing_units):
-        segment_tokens = len(source_text) / 4.0
-        
-        if (current_batch_tokens + segment_tokens > TOKEN_LIMIT or len(current_batch_texts) >= BATCH_SIZE) and current_batch_texts:
-            await flush_batch()
-            
-        current_batch_texts.append(source_text)
-        current_batch_indices.append(original_unit_idx)
-        current_batch_tokens += segment_tokens
-
-    await flush_batch()
+    # Shortest first, so each chunk holds strings of similar length and its batches need little padding.
+    missing_units.sort(key=lambda unit: len(unit[1]))
+    for start in range(0, len(missing_units), CHUNK_SIZE):
+        for original_unit_idx, source_text in missing_units[start:start + CHUNK_SIZE]:
+            current_batch_texts.append(source_text)
+            current_batch_indices.append(original_unit_idx)
+            current_batch_tokens += len(source_text) / 4.0
+        await flush_batch()
 
     profiler.start_timer("xml_write")
     tree.write(local_path, encoding='utf-8', xml_declaration=True)

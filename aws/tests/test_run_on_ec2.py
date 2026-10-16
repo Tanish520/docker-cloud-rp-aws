@@ -112,3 +112,19 @@ def test_benchmark_arguments_reach_the_machine(run_on_ec2):
     result, _, _, params = run_on_ec2(RUNNER_TASK="batching-bench", BENCH_ARGS="--kde4 s3://b/k.xlsx --kde4-strings 1000")
     assert result.returncode == 0, result.stdout + result.stderr
     assert "BENCH_ARGS='--kde4 s3://b/k.xlsx --kde4-strings 1000'" in json.loads(params.read_text())["commands"][0]
+
+
+def test_config_and_input_file_reach_the_machine(run_on_ec2):
+    result, _, _, params = run_on_ec2(PIPELINE_CONFIG="aws/config.kde4.json", INPUT_S3="s3://b/datasets/kde4/kde4.resx")
+    assert result.returncode == 0, result.stdout + result.stderr
+    command = json.loads(params.read_text())["commands"][0]
+    assert "PIPELINE_CONFIG='aws/config.kde4.json'" in command
+    assert "INPUT_S3='s3://b/datasets/kde4/kde4.resx'" in command
+
+
+def test_safety_shutdown_follows_the_run_timeout(run_on_ec2):
+    # The launch template schedules a 4-hour shutdown; a longer run moves it to the timeout + 30 minutes.
+    result, _, _, params = run_on_ec2(RUNNER_TIMEOUT_SECONDS="21600")
+    command = json.loads(params.read_text())["commands"][0]
+    assert "shutdown -h +390" in command
+    assert command.index("shutdown -h +390") < command.index("run_all.sh")

@@ -20,7 +20,8 @@ AZ_TRANSLATION = AZ_DOCKER / "translation.py"
 AWS_TRANSLATION = AWS_TRANSLATOR / "translation.py"
 AZURE_ONLY_IMPORTS = {"from azure.storage.blob import BlobServiceClient"}
 AWS_ONLY_IMPORTS = {"import aws_runtime", "from s3_store import RunStore",
-                    "from placeholders import protect, restore"}
+                    "from placeholders import protect, restore",
+                    "from batching import decoding_cap, plan_token_batches"}
 
 
 def _dumps(statements):
@@ -29,8 +30,10 @@ def _dumps(statements):
 
 
 def test_translation_shared_code_is_identical():
-    # translate_local adds placeholder protection on AWS (BATCHING_RESULTS.md section 10).
-    exclude = ("main", "translate_local")
+    # AWS changes only the translation engine: batching and beam (BATCHING_RESULTS.md sections 8-9),
+    # placeholder protection (section 10) and a Punjabi entry.
+    exclude = ("main", "translate_local", "process_xlf_file", "translator", "BATCH_SIZE", "TOKEN_LIMIT",
+               "CHUNK_SIZE", "BEAM_SIZE", "ENGINE_WORKERS", "TM_KEY_LIMIT", "LANG_TOKEN_MULTIPLIERS")
     assert shared_top_level(AWS_TRANSLATION, exclude) == shared_top_level(AZ_TRANSLATION, exclude)
 
 

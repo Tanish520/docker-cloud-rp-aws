@@ -28,12 +28,15 @@ def function_dump(path, name):
 
 
 def shared_top_level(path, exclude=("main",)):
-    """Top-level statements except imports, the excluded functions and the __main__ guard."""
+    """Top-level statements except imports, the __main__ guard, and the excluded functions and
+    statements that assign an excluded name (anywhere inside them, e.g. in a try block)."""
     out = []
     for node in parse(path).body:
         if isinstance(node, (ast.Import, ast.ImportFrom)) or _is_main_guard(node):
             continue
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in exclude:
+            continue
+        if any(_assigned_names(stmt) & set(exclude) for stmt in ast.walk(node)):
             continue
         out.append(ast.dump(node))
     return out
