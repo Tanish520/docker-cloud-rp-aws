@@ -232,3 +232,55 @@ RUNNER_TASK=batching-bench RUNNER_TIMEOUT_SECONDS=10800 \
   BENCH_ARGS="--kde4 s3://<data-bucket>/datasets/kde4/Dataset-Translated.xlsx --kde4-strings 500 --kde4-parallel" \
   bash aws/infra/run_on_ec2.sh
 ```
+
+## 10. Placeholder protection — `ec2-20261016t195057z` (2026-10-16)
+
+**Flaw found in section 8:** about 12% of KDE4 strings with placeholders (`%1`, `%s`, `{name}`, `<tag>`) came back with a placeholder missing or changed, at every beam size. The model treats `%1` as ordinary text. In the localized software that is a broken message.
+
+**What we changed:** `translator/placeholders.py`.
+- **Protect:** before translation, each placeholder is swapped for a numbered marker, and after translation swapped back.
+- **Restore** accepts what the model does to a marker: full-width brackets (`［0］`), spaces inside, and native digits (`[०]`, `[٠]`).
+- **Check:** restore reports whether every marker came back exactly once.
+- **Skip:** text that already contains something marker-like is sent unchanged.
+- **Ruled out before testing:** `⟦0⟧` brackets, because those characters are not in the NLLB vocabulary and would be lost.
+- **Fallback:** where the markers do not all come back, use the unprotected translation for that string.
+
+**Test:** all 355 usable KDE4 placeholder strings × 12 languages = **4,260 translations per style**, beam 2, length-sorted 1024-token batches, same m5.large.
+
+| Style | Example | Placeholders kept | With fallback | Fallback used | chrF vs references | Time (s) |
+|---|---|---:|---:|---:|---:|---:|
+| none (today) | `Could not find conduit %1.` | 87.70% | — | — | 61.79 | 649.3 |
+| **square** | `Could not find conduit [0].` | **99.15%** | **99.88%** | 0.85% | 59.51 (with fallback 59.76) | 716.1 |
+| section | `Could not find conduit §0§.` | 80.66% | 97.91% | 19.34% | 56.27 (with fallback 59.00) | 749.5 |
+| curly | `Could not find conduit {0}.` | 88.78% | 97.37% | 11.22% | 58.74 (with fallback 60.27) | 747.8 |
+
+**Per language** (placeholders kept, no protection → square):
+
+| Lang | hi | ar | bn | de | es | fr | ja | mr | pa | ta | te | zh |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| none | 90.1% | 89.9% | 82.0% | 90.1% | 88.5% | 85.9% | 86.8% | 88.7% | 88.2% | 92.1% | 90.7% | 79.4% |
+| square | 100% | 98.3% | 100% | 97.5% | 99.2% | 96.9% | 99.7% | 99.7% | 99.7% | 100% | 100% | 98.9% |
+
+**What it shows:**
+1. **Square markers fix the problem.**
+   - Placeholders kept rise from 87.7% to 99.15%; with the fallback, to 99.88%. That is 5 broken strings out of 4,260 instead of about 524.
+   - Every language reaches at least 96.9%; Chinese improves the most (79.4% → 98.9%).
+   - **Why square works:** NLLB saw many citation marks like `[1]` in training and copies them unchanged.
+2. **Section and curly markers do not work well.** The model often rewrites `§0§` and `{0}`: it translates around them, drops them, or changes the braces. Section was even worse than no protection.
+3. **chrF against the spreadsheet drops about 2 points on these 355 strings** (61.79 → 59.76 with fallback). The cause is not yet confirmed. Two likely reasons:
+   - The spreadsheet's own translations drop `%N` placeholders in 5–25% of rows (section 8), so an output that correctly keeps `%1` matches those references less well.
+   - A marker can slightly change how the words around it are translated.
+
+   This affects only strings that contain placeholders (3.5% of KDE4). Strings without placeholders are not touched by protection, so their translations are identical.
+4. **Cost:** about 10% more time on placeholder strings, from slightly longer input. Negligible overall.
+
+**Recommendation:** use **square** markers with the **fallback** in the pipeline. A placeholder broken in about 1 in 8 strings is a functional bug in the localized software; the ~2-point chrF change on 3.5% of strings is measured against references that themselves drop placeholders.
+
+**Raw data:** `s3://<data-bucket>/runs/ec2-20261016t195057z/bench/results.json`.
+
+**To repeat:**
+```bash
+RUNNER_TASK=batching-bench RUNNER_TIMEOUT_SECONDS=10800 \
+  BENCH_ARGS="--kde4 s3://<data-bucket>/datasets/kde4/Dataset-Translated.xlsx --kde4-placeholders" \
+  bash aws/infra/run_on_ec2.sh
+```
