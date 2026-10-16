@@ -188,3 +188,47 @@ RUNNER_TASK=batching-bench RUNNER_TIMEOUT_SECONDS=13800 \
   BENCH_ARGS="--kde4 s3://<data-bucket>/datasets/kde4/Dataset-Translated.xlsx --kde4-strings 1000" \
   bash aws/infra/run_on_ec2.sh
 ```
+
+## 9. Parallel batches and a length cap — `ec2-20261016t142418z` (2026-10-16)
+
+**Flaw found in section 8:** during translation the m5.large averaged only **~59% CPU**. CTranslate2 worked on **one batch at a time**, and part of the 2 cores sat idle. Setting `intra_threads=2` did not help (run 1, step B).
+
+**What we changed, one step at a time** (KDE4, 500 strings × 12 languages = 6,000 translations, beam 2, length-sorted batches):
+- **P1:** load the model with `inter_threads=2, intra_threads=1` and queue every batch at once (`asynchronous=True`), so **two batches are translated in parallel, one per core**.
+- **P2:** P1 with smaller 512-token batches.
+- **P3:** the faster of P1/P2, plus a per-batch output cap (`max_decoding_length` = 2 × the longest input in the batch + 10 tokens).
+
+Batches are sorted by length, so the cap fits every string in the batch and keeps one runaway string from holding the batch up.
+
+| Step | Change | Time (s) | Translations/hour | Speed-up | CPU busy | Batches | chrF | Identical to P0 | Peak memory |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| P0 | One batch at a time (today's engine) | 617.52 | 34,979 | 1.00× | 59.3% | 35 | 64.44 | — | 2.6 GB |
+| **P1** | **2 batches at once, 1024-token** | 514.97 | 41,944 | **1.20×** | **99.6%** | 35 | 64.44 | 100% | 4.5 GB |
+| P2 | P1 with 512-token batches | 539.68 | 40,024 | 1.14× | 99.3% | 69 | 64.44 | 99.9% | 4.5 GB |
+| **P3** | **P1 + output length cap** | **488.14** | **44,250** | **1.27×** | 99.6% | 35 | 64.44 | **100%** | 4.5 GB |
+
+**What it shows:**
+1. **Parallel batches fix the idle CPU.** Usage went from 59% to 99.6%, for **1.20× faster** translation with identical output.
+   - It is less than 2× because two cores sharing the work each run slower than one core alone.
+   - The cost is memory, 2.6 → 4.5 GB, a second set of working buffers; still safe on 8 GB.
+2. **Smaller batches do not help with parallel work.** 512-token batches were slower (1.14×) than 1024-token batches (1.20×): more batches means more per-batch overhead.
+3. **The length cap adds another ~6%** (1.27× in total) **without changing a single translation** on this sample: output identical, chrF unchanged. It is a safety limit on runaway strings, so it costs nothing here.
+
+**Combined effect, estimated, not yet measured end to end:**
+
+| Setting | Speed-up |
+|---|---:|
+| Beam 2 (section 8) | 2.20× |
+| Parallel batches + length cap (this section) | 1.27× |
+| Both together | **about 2.8×** faster than today's beam 5, one batch at a time |
+
+A 50-string file would drop from about 21 s to about 7.5 s. Beam 2 is still on hold until quality is confirmed (section 7). Parallel batches and the length cap gave identical output, so they could go into production now without waiting for that check.
+
+**Raw data:** `s3://<data-bucket>/runs/ec2-20261016t142418z/bench/results.json`.
+
+**To repeat:**
+```bash
+RUNNER_TASK=batching-bench RUNNER_TIMEOUT_SECONDS=10800 \
+  BENCH_ARGS="--kde4 s3://<data-bucket>/datasets/kde4/Dataset-Translated.xlsx --kde4-strings 500 --kde4-parallel" \
+  bash aws/infra/run_on_ec2.sh
+```
