@@ -116,3 +116,75 @@ The pipeline stays at **beam 5** with today's batching for now. The beam-2 and b
 ```bash
 RUNNER_TASK=batching-bench RUNNER_TIMEOUT_SECONDS=10800 bash aws/infra/run_on_ec2.sh
 ```
+
+## 8. KDE4 test — `ec2-20261016t115802z` (2026-10-16)
+
+The FLORES check (sections 4–6) used only 40 general-domain sentences per language. This test repeats beam 5 / 2 / 1 on the **KDE4 software-localization dataset** supplied by the Track 1 team. That is the same kind of short UI text the pipeline translates, at a much larger size.
+
+**Dataset:** `Dataset-Translated.xlsx`. English plus 12 languages: hi, ar, bn, de, es, fr, ja, mr, pa, ta, te, zh. It is stored privately in S3 at `datasets/kde4/` and is not committed.
+- **Cleaning** (`clean_kde4`): 10,231 rows became **10,054 usable** strings. 177 rows were dropped:
+  - one cell holding hundreds of strings glued together with line breaks (8,575 characters);
+  - two cells Excel had turned into TRUE/FALSE booleans;
+  - duplicate English strings.
+- **Speed and quality sample:** a fixed random sample (seed 2026) of **1,000 strings × 12 languages = 12,000 translations** per beam. The strings are short: median 13 characters, about 2 words.
+- **Placeholder check:** all **355** usable strings containing placeholders (`%1`, `%s`, `{name}`, `<tag>`) × 12 languages = 4,260 translations per beam. Kept separate so the sample stays representative.
+- **⚠️ About the reference translations:** signs suggest they are **machine translations**, not KDE's human translations:
+  - every row is filled for all 12 languages;
+  - TRUE/FALSE became "WAHR"/"FALSCH";
+  - Arabic "Gray Heading" is a transliteration;
+  - the references themselves drop `%N` placeholders in 5–25% of rows.
+
+  Until the Track 1 team confirms how they were produced, chrF here means *closeness to the spreadsheet's translations*. The placeholder check does not use the references, so it is valid either way.
+
+**Setup:** same EC2 m5.large (2 vCPU), image, model and 2 pinned cores as production. Run-wide, length-sorted 1024-token batches, which give output identical to production's batching (section 4).
+
+| Beam | Time, 12,000 translations | Translations/hour | Speed-up | chrF (all 12) | Placeholders kept exactly | Identical to beam 5 | Peak memory |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 5 (today) | 3,169 s | 13,631 | 1.00× | **64.41** | 88.0% | — | 5.2 GB |
+| **2** | **1,442 s** | 29,949 | **2.20×** | **63.96 (−0.45)** | 87.7% | 84% | 5.2 GB |
+| 1 | 915 s | 47,197 | 3.46× | 62.26 (−2.15) | 86.9% | 69% | 5.2 GB |
+
+**Per language** (chrF / placeholders kept):
+
+| Lang | Beam 5 | Beam 2 | Beam 1 |
+|---|---|---|---|
+| hi | 66.90 / 89.6% | 66.61 / 90.1% | 65.60 / 89.3% |
+| ar | 57.15 / 91.0% | 55.74 / 89.9% | 53.77 / 89.9% |
+| bn | 64.87 / 83.1% | 64.11 / 82.0% | 63.88 / 82.3% |
+| de | 65.06 / 89.6% | 64.39 / 90.1% | 62.21 / 89.9% |
+| es | 72.01 / 87.6% | 71.69 / 88.5% | 68.49 / 87.0% |
+| fr | 70.23 / 85.9% | 69.48 / 85.9% | 68.16 / 84.5% |
+| ja | 53.43 / 87.3% | 52.52 / 86.8% | 46.51 / 86.8% |
+| mr | 59.34 / 89.0% | 59.08 / 88.7% | 58.76 / 88.7% |
+| pa | 63.35 / 87.9% | 63.27 / 88.2% | 62.68 / 88.2% |
+| ta | 64.70 / 92.4% | 65.07 / 92.1% | 63.70 / 91.8% |
+| te | 66.07 / 92.1% | 65.86 / 90.7% | 64.26 / 90.4% |
+| zh | 39.68 / 80.6% | 39.30 / 79.4% | 33.72 / 74.4% |
+
+**What KDE4 adds:**
+1. **Beam 2 is confirmed as the balanced choice on real localization text.**
+   - It is 2.2× faster for −0.45 chrF overall, a smaller loss than on FLORES.
+   - Every language stays within 1.4 points (Arabic −1.41 is the largest), and Tamil slightly improves.
+2. **Beam 1 costs more on KDE4 than on FLORES:** −2.15 overall, with large drops for Japanese (−6.9) and Chinese (−6.0). It is not suitable for CJK languages.
+3. **Placeholder breakage is a separate quality problem.**
+   - At *every* beam size, about 12% of strings with placeholders come back with `%1`, `{name}` or tags missing or changed: 81% kept for Chinese, 92% for Tamil.
+   - In the localized software that shows up as broken messages.
+   - Beam size barely affects it, so it needs its own fix: protect placeholders before translation and restore them after.
+4. **CPU use is about 59%, not 100%.**
+   - During the runs CloudWatch showed the m5.large at about 59% average CPU, so CTranslate2 is not keeping both cores busy.
+   - Run 1 (step B) showed `intra_threads=2` does not change this. The cause is not yet known and is worth investigating separately.
+5. **Peak memory reached 5.2 GB** in this run. More and longer batches than the resx runs, plus the placeholder set, but it stays below the 8 GB limit.
+
+**Updated recommendation:**
+- **Beam 2** for production: about 2.2× faster translation for under half a chrF point on KDE4 and under 1 point on FLORES.
+- Next quality work: **placeholder protection**.
+- Have the Track 1 team confirm the KDE4 reference provenance, and add COMET, before the numbers go into the paper.
+
+**Raw data:** `s3://<data-bucket>/runs/ec2-20261016t115802z/bench/results.json`.
+
+**To repeat:**
+```bash
+RUNNER_TASK=batching-bench RUNNER_TIMEOUT_SECONDS=13800 \
+  BENCH_ARGS="--kde4 s3://<data-bucket>/datasets/kde4/Dataset-Translated.xlsx --kde4-strings 1000" \
+  bash aws/infra/run_on_ec2.sh
+```
