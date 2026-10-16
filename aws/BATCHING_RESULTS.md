@@ -276,6 +276,8 @@ RUNNER_TASK=batching-bench RUNNER_TIMEOUT_SECONDS=10800 \
 
 **Recommendation:** use **square** markers with the **fallback** in the pipeline. A placeholder broken in about 1 in 8 strings is a functional bug in the localized software; the ~2-point chrF change on 3.5% of strings is measured against references that themselves drop placeholders.
 
+**Status:** in the production translator (`translator/translation.py`, `translate_local`): square markers, plus a second unmasked pass only for the strings whose markers did not all come back. Beam size and batching are unchanged (beam 5).
+
 **Raw data:** `s3://<data-bucket>/runs/ec2-20261016t195057z/bench/results.json`.
 
 **To repeat:**

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import types
 
 import pytest
 
@@ -241,3 +242,61 @@ def test_retry_after_full_success_with_nothing_left_passes(translation, run_env,
     s3.put_object(Bucket=BUCKET, Key="runs/run-1/translated/resx_file_10.es-ES.xlf", Body=XLF.encode("utf-8"))
     monkeypatch.setattr(translation, "get_sql_connection", lambda conn_str: (FakeConn(), 0))
     assert run(translation, run_env) == 0
+
+
+class WordTokenizer:
+    """Splits on spaces so a fake model can work on whole words."""
+    src_lang = None
+
+    def encode(self, text, **kwargs):
+        return text.split()
+
+    def convert_ids_to_tokens(self, ids):
+        return list(ids)
+
+    def convert_tokens_to_ids(self, tokens):
+        return list(tokens)
+
+    def decode(self, ids, skip_special_tokens=False):
+        return " ".join(ids)
+
+
+class FakeModel:
+    """Translates with `rule(source text)` and records every text it was given."""
+
+    def __init__(self, rule):
+        self.rule, self.seen = rule, []
+
+    def translate_batch(self, batch, target_prefix, **kwargs):
+        results = []
+        for tokens, prefix in zip(batch, target_prefix):
+            source = " ".join(tokens)
+            self.seen.append(source)
+            results.append(types.SimpleNamespace(hypotheses=[prefix + self.rule(source).split()]))
+        return results
+
+
+def use_model(translation, monkeypatch, rule):
+    model = FakeModel(rule)
+    monkeypatch.setattr(translation, "tokenizer", WordTokenizer())
+    monkeypatch.setattr(translation, "translator", model)
+    return model
+
+
+def test_placeholders_are_masked_for_the_model_and_put_back(translation, monkeypatch):
+    model = use_model(translation, monkeypatch, lambda s: s.replace("Open", "Ouvrir").replace("now", "maintenant"))
+
+    translations, _, _ = translation.translate_local(["Open %1 now", "Open now"], "fr-FR")
+
+    assert model.seen == ["Open [0] now", "Open now"]
+    assert translations == ["Ouvrir %1 maintenant", "Ouvrir maintenant"]
+
+
+def test_a_lost_marker_falls_back_to_the_unmasked_translation(translation, monkeypatch):
+    # The model drops "[1]"; that one string is translated again as written, so %2 is not lost.
+    model = use_model(translation, monkeypatch, lambda s: s.replace(" [1]", "").replace("Copy", "Kopiere"))
+
+    translations, _, _ = translation.translate_local(["Copy [3] %1 to %2", "Copy %1 to %2"], "de-DE")
+
+    assert model.seen == ["Copy [3] %1 to %2", "Copy [0] to [1]", "Copy %1 to %2"]
+    assert translations == ["Kopiere [3] %1 to %2", "Kopiere %1 to %2"]

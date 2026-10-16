@@ -19,7 +19,8 @@ def test_xlf_to_resx_is_identical_to_azure():
 AZ_TRANSLATION = AZ_DOCKER / "translation.py"
 AWS_TRANSLATION = AWS_TRANSLATOR / "translation.py"
 AZURE_ONLY_IMPORTS = {"from azure.storage.blob import BlobServiceClient"}
-AWS_ONLY_IMPORTS = {"import aws_runtime", "from s3_store import RunStore"}
+AWS_ONLY_IMPORTS = {"import aws_runtime", "from s3_store import RunStore",
+                    "from placeholders import protect, restore"}
 
 
 def _dumps(statements):
@@ -28,7 +29,9 @@ def _dumps(statements):
 
 
 def test_translation_shared_code_is_identical():
-    assert shared_top_level(AWS_TRANSLATION) == shared_top_level(AZ_TRANSLATION)
+    # translate_local adds placeholder protection on AWS (BATCHING_RESULTS.md section 10).
+    exclude = ("main", "translate_local")
+    assert shared_top_level(AWS_TRANSLATION, exclude) == shared_top_level(AZ_TRANSLATION, exclude)
 
 
 def test_translation_imports_differ_only_by_storage_and_runtime():

@@ -20,6 +20,7 @@ import ctranslate2
 from transformers import AutoTokenizer
 import aws_runtime
 from s3_store import RunStore
+from placeholders import protect, restore
 from opencensus.ext.azure.log_exporter import AzureLogHandler
 from opencensus.ext.azure import metrics_exporter
 from opencensus.stats import aggregation as aggregation_module
@@ -236,31 +237,46 @@ def translate_local(texts, target_lang):
     try:
         tokenizer.src_lang = "eng_Latn"
         
-        # 1. Tokenize inputs with TRUNCATION SAFETY to prevent C++ engine crashes
-        source_tokens = []
-        for text in texts:
-            encoded_ids = tokenizer.encode(text, truncation=True, max_length=TOKEN_LIMIT)
-            source_tokens.append(tokenizer.convert_ids_to_tokens(encoded_ids))
-        
-        # 2. Pure C++ Engine Inference
-        results = translator.translate_batch(
-            source_tokens,
-            target_prefix=[[tgt_token]] * len(texts),
-            beam_size=5, # Optimally fast while maintaining quality
-            batch_type="tokens", # Dynamic padding removal
-            max_batch_size=1024
-        )
-        
-        # 3. Detokenize back to string (Fast CPU op)
-        translations = []
-        for result in results:
-            # Drop the language token prefix from the beginning
-            target_tokens = result.hypotheses[0][1:]
-            
-            # CRITICAL FIX: Skip special tokens so </s> doesn't leak into the translation
-            token_ids = tokenizer.convert_tokens_to_ids(target_tokens)
-            clean_text = tokenizer.decode(token_ids, skip_special_tokens=True)
-            translations.append(clean_text)
+        def run_engine(batch):
+            # 1. Tokenize inputs with TRUNCATION SAFETY to prevent C++ engine crashes
+            source_tokens = []
+            for text in batch:
+                encoded_ids = tokenizer.encode(text, truncation=True, max_length=TOKEN_LIMIT)
+                source_tokens.append(tokenizer.convert_ids_to_tokens(encoded_ids))
+
+            # 2. Pure C++ Engine Inference
+            results = translator.translate_batch(
+                source_tokens,
+                target_prefix=[[tgt_token]] * len(batch),
+                beam_size=5, # Optimally fast while maintaining quality
+                batch_type="tokens", # Dynamic padding removal
+                max_batch_size=1024
+            )
+
+            # 3. Detokenize back to string (Fast CPU op)
+            out = []
+            for result in results:
+                # Drop the language token prefix from the beginning
+                target_tokens = result.hypotheses[0][1:]
+
+                # CRITICAL FIX: Skip special tokens so </s> doesn't leak into the translation
+                token_ids = tokenizer.convert_tokens_to_ids(target_tokens)
+                out.append(tokenizer.decode(token_ids, skip_special_tokens=True))
+            return out
+
+        # Placeholders (%1, {name}, <b>) go to the model as [0], [1], ... which it copies far more
+        # reliably (KDE4: 87.7% -> 99.15% kept); see BATCHING_RESULTS.md section 10.
+        masked = [protect(text) for text in texts]
+        translations, lost = [], []
+        for i, (output, (_, originals)) in enumerate(zip(run_engine([m for m, _ in masked]), masked)):
+            restored, ok = restore(output, originals)
+            translations.append(restored)
+            if not ok:
+                lost.append(i)
+        # Where a marker did not come back exactly once, use the translation of the text as written.
+        if lost:
+            for i, output in zip(lost, run_engine([texts[i] for i in lost])):
+                translations[i] = output
 
         latency = profiler.stop_timer("hf_network_latency")
 
