@@ -135,6 +135,11 @@ def process_cpu_seconds():
     return usage.ru_utime + usage.ru_stime
 
 
+def with_fallback(protected, ok, unprotected):
+    """The pipeline's policy: the protected translation where every marker came back, else the unprotected one."""
+    return [p if good else u for p, good, u in zip(protected, ok, unprotected)]
+
+
 def identical_fraction(a, b):
     return round(sum(x == y for x, y in zip(a, b)) / len(a), 4) if a else 0.0
 
@@ -320,6 +325,46 @@ def run_kde4_parallel(args, engine, translation, report):
             lambda: run_global_parallel(pairs, parallel, budget, beam_size=2, cap_length=True))
 
 
+def run_kde4_placeholders(args, engine, report):
+    """Beam 2 on every KDE4 placeholder string: no protection vs each marker style (+ the fallback policy)."""
+    import placeholders as ph
+    langs, rows, items, _ = kde4_sample(args)
+    marked = placeholder_items(items)
+    english = [e for e, _ in marked]
+    pairs = [("kde4", e, lang) for lang in langs for e in english]
+    refs = [r[lang] for lang in langs for _, r in marked]
+    n = len(marked)
+    report["kde4_placeholders"] = {"source": args.kde4, "strings": n, "languages": langs, "pairs": len(pairs),
+                                   "beam_size": 2, "styles": {}}
+
+    def score(final, seconds, extra):
+        per_lang = {lang: {"kept": placeholder_kept_fraction(english, final[i * n:(i + 1) * n]),
+                           "chrf": chrf(final[i * n:(i + 1) * n], refs[i * n:(i + 1) * n])} for i, lang in enumerate(langs)}
+        entry = {"kept_all": placeholder_kept_fraction([p[1] for p in pairs], final), "chrf_all": chrf(final, refs),
+                 "seconds": round(seconds, 2), "peak_memory_mb": peak_memory_mb(), **extra, "per_language": per_lang}
+        return entry
+
+    unprotected, seconds, _ = run_global(pairs, engine, PROD_TOKEN_LIMIT, True, beam_size=2)
+    report["kde4_placeholders"]["styles"]["none"] = score(unprotected, seconds, {})
+    print("PLACEHOLDER_RESULT none: kept", report["kde4_placeholders"]["styles"]["none"]["kept_all"], flush=True)
+    save_report(report, args.out)
+    for style in ("square", "section", "curly"):
+        masked = [ph.protect(text, style) for _, text, _ in pairs]
+        masked_pairs = [(f, m, lang) for (f, _, lang), (m, _) in zip(pairs, masked)]
+        out, seconds, _ = run_global(masked_pairs, engine, PROD_TOKEN_LIMIT, True, beam_size=2)
+        restored = [ph.restore(o, originals, style) for o, (_, originals) in zip(out, masked)]
+        final, ok = [r for r, _ in restored], [good for _, good in restored]
+        entry = score(final, seconds, {"masked_share": round(sum(1 for _, o in masked if o) / len(masked), 4),
+                                       "markers_restored_all": round(sum(ok) / len(ok), 4)})
+        combined = with_fallback(final, ok, unprotected)
+        entry["with_fallback"] = {"kept_all": placeholder_kept_fraction([p[1] for p in pairs], combined),
+                                  "chrf_all": chrf(combined, refs),
+                                  "fallback_share": round(1 - sum(ok) / len(ok), 4)}
+        report["kde4_placeholders"]["styles"][style] = entry
+        print(f"PLACEHOLDER_RESULT {style}: " + json.dumps({k: v for k, v in entry.items() if k != "per_language"}), flush=True)
+        save_report(report, args.out)
+
+
 def run_kde4(args, engine, report):
     """Beam 5 / 2 / 1 on a fixed KDE4 sample: speed, chrF against the spreadsheet, placeholder survival."""
     langs, rows, items, chosen = kde4_sample(args)
@@ -383,6 +428,8 @@ def parse_args(argv=None):
     parser.add_argument("--flores-sentences", type=int, default=40)
     parser.add_argument("--kde4", help="KDE4 spreadsheet (path or s3:// URI): run only the beam 5/2/1 test on it.")
     parser.add_argument("--kde4-strings", type=int, default=1000, help="English strings sampled from KDE4.")
+    parser.add_argument("--kde4-placeholders", action="store_true",
+                        help="With --kde4: compare placeholder protection styles on every placeholder string (beam 2).")
     parser.add_argument("--kde4-parallel", action="store_true",
                         help="With --kde4: test parallel batches and a length cap at beam 2 instead of beam 5/2/1.")
     return parser.parse_args(argv)
@@ -408,7 +455,9 @@ def main(argv=None):
     production = Engine(translation.translator, translation.tokenizer)
     production.translate_texts(["Warm up the model."], "de-DE")
     if args.kde4:
-        if args.kde4_parallel:
+        if args.kde4_placeholders:
+            run_kde4_placeholders(args, production, report)
+        elif args.kde4_parallel:
             run_kde4_parallel(args, production, translation, report)
         else:
             run_kde4(args, production, report)

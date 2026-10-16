@@ -124,3 +124,14 @@ def test_cpu_utilization_is_cpu_time_over_available_core_time():
 
 def test_parallel_mode_is_an_option():
     assert bb.parse_args(["--workload", "w", "--out", "o", "--kde4", "k.xlsx", "--kde4-parallel"]).kde4_parallel
+
+
+def test_fallback_uses_the_unprotected_translation_only_where_markers_were_lost():
+    protected = ["Öffne %1", "Kopiere [1]", "Fertig"]
+    ok = [True, False, True]
+    unprotected = ["Öffnen %1", "Kopiere %1 nach %2", "Fertig!"]
+    assert bb.with_fallback(protected, ok, unprotected) == ["Öffne %1", "Kopiere %1 nach %2", "Fertig"]
+
+
+def test_placeholder_style_mode_is_an_option():
+    assert bb.parse_args(["--workload", "w", "--out", "o", "--kde4", "k.xlsx", "--kde4-placeholders"]).kde4_placeholders
