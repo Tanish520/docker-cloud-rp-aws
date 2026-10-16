@@ -108,3 +108,10 @@ def test_bench_task_skips_the_database_and_uploads_benchmark_results(run_phase2)
     [bench] = [c for c in calls if "batching_bench.py" in c]
     assert "--cpuset-cpus=0,1" in bench and "/workload:ro" in bench
     assert any(c.startswith("aws s3 cp") and "s3://bucket/runs/run-1/bench/results.json" in c for c in calls)
+
+
+def test_bench_task_passes_benchmark_arguments_into_the_container(run_phase2):
+    result, calls = run_phase2(PHASE2_TASK="bench", BENCH_ARGS="--kde4 s3://bucket/datasets/kde4.xlsx")
+    assert result.returncode == 0, result.stdout + result.stderr
+    [bench] = [c for c in calls if "batching_bench.py" in c]
+    assert "-e BENCH_ARGS" in bench and "$BENCH_ARGS" in bench

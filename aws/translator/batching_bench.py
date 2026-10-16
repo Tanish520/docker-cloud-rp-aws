@@ -10,6 +10,8 @@ starting from the fastest configuration found so far, so every gain can be trace
 import argparse
 import json
 import os
+import random
+import re
 import resource
 import tarfile
 import time
@@ -19,6 +21,12 @@ import xml.etree.ElementTree as ET
 LANGS = ["de-DE", "es-ES", "fr-FR", "hi-IN", "ja-JP", "ru-RU", "zh-CN"]   # production order (sorted blob names)
 NLLB_CODES = {"de-DE": "deu_Latn", "es-ES": "spa_Latn", "fr-FR": "fra_Latn", "hi-IN": "hin_Deva",
               "ja-JP": "jpn_Jpan", "ru-RU": "rus_Cyrl", "zh-CN": "zho_Hans"}
+# KDE4 spreadsheet columns (Dataset-Translated.xlsx) -> NLLB codes.
+KDE4_CODES = {"hi": "hin_Deva", "ar": "arb_Arab", "bn": "ben_Beng", "de": "deu_Latn", "es": "spa_Latn",
+              "fr": "fra_Latn", "ja": "jpn_Jpan", "mr": "mar_Deva", "pa": "pan_Guru", "ta": "tam_Taml",
+              "te": "tel_Telu", "zh": "zho_Hans"}
+CODES = {**NLLB_CODES, **KDE4_CODES}
+PLACEHOLDER = re.compile(r"%\d+|%[sdif]|\{[^}]*\}|<[^>]+>")
 DEFAULT_FILES = ["resx_file_10.resx", "resx_file_19.resx", "resx_file_20.resx"]
 PROD_BATCH_SIZE = 52      # translation.py BATCH_SIZE
 PROD_TOKEN_LIMIT = 1024   # translation.py TOKEN_LIMIT (also CTranslate2 max_batch_size there)
@@ -75,6 +83,43 @@ def padding_ratio(batches, lengths):
     return round(1 - real / padded, 4) if padded else 0.0
 
 
+def clean_kde4(rows, langs):
+    """(english, {lang: reference}) for usable rows: every cell text, no glued multi-line cells,
+    English not repeated (first kept)."""
+    seen, items = set(), []
+    for row in rows:
+        english, refs = row[0], dict(zip(langs, row[1:]))
+        cells = [english, *refs.values()]
+        if not all(isinstance(c, str) and c.strip() for c in cells):
+            continue                      # empty cell, or Excel turned the text into TRUE/FALSE/number
+        if "\n" in english or english in seen:
+            continue                      # many strings glued into one cell, or a duplicate
+        seen.add(english)
+        items.append((english, refs))
+    return items
+
+
+def sample(items, n, seed=2026):
+    """A fixed random subset in original order (all items when n >= len(items))."""
+    if n >= len(items):
+        return list(items)
+    return [items[i] for i in sorted(random.Random(seed).sample(range(len(items)), n))]
+
+
+def placeholder_items(items):
+    """Every item whose English contains a placeholder (too few land in a random sample to judge)."""
+    return [item for item in items if PLACEHOLDER.search(item[0])]
+
+
+def placeholder_kept_fraction(sources, outputs):
+    """Among sources with placeholders (%1, %s, {name}, <tag>), the share whose output keeps exactly the same ones."""
+    checked = [(s, o) for s, o in zip(sources, outputs) if PLACEHOLDER.search(s)]
+    if not checked:
+        return None
+    kept = sum(sorted(PLACEHOLDER.findall(s)) == sorted(PLACEHOLDER.findall(o)) for s, o in checked)
+    return round(kept / len(checked), 4)
+
+
 def identical_fraction(a, b):
     return round(sum(x == y for x, y in zip(a, b)) / len(a), 4) if a else 0.0
 
@@ -103,7 +148,7 @@ class Engine:
 
     def translate_tokens(self, token_lists, langs, beam_size, batch_type, max_batch_size):
         results = self.translator.translate_batch(
-            token_lists, target_prefix=[[NLLB_CODES[lang]] for lang in langs], beam_size=beam_size,
+            token_lists, target_prefix=[[CODES[lang]] for lang in langs], beam_size=beam_size,
             batch_type=batch_type, max_batch_size=max_batch_size)
         return [self.tokenizer.decode(self.tokenizer.convert_tokens_to_ids(r.hypotheses[0][1:]),
                                       skip_special_tokens=True) for r in results]
@@ -177,6 +222,57 @@ def load_flores(per_language):
     return read("eng_Latn"), {lang: read(code) for lang, code in NLLB_CODES.items()}
 
 
+def read_kde4(path):
+    """Header languages and data rows of the KDE4 spreadsheet (first column English). s3:// paths are downloaded."""
+    if path.startswith("s3://"):
+        import boto3
+        bucket, key = path[5:].split("/", 1)
+        boto3.client("s3").download_file(bucket, key, "/tmp/kde4.xlsx")
+        path = "/tmp/kde4.xlsx"
+    import openpyxl
+    rows = list(openpyxl.load_workbook(path, read_only=True, data_only=True).worksheets[0].iter_rows(values_only=True))
+    return list(rows[0][1:]), rows[1:]
+
+
+def run_kde4(args, engine, report):
+    """Beam 5 / 2 / 1 on a fixed KDE4 sample: speed, chrF against the spreadsheet, placeholder survival."""
+    langs, rows = read_kde4(args.kde4)
+    items = clean_kde4(rows, langs)
+    chosen = sample(items, args.kde4_strings)
+    pairs = [("kde4", english, lang) for lang in langs for english, _ in chosen]
+    marked = placeholder_items(items)
+    marked_pairs = [("kde4", english, lang) for lang in langs for english, _ in marked]
+    refs = [r[lang] for lang in langs for _, r in chosen]
+    report["kde4"] = {"source": args.kde4, "rows_in_file": len(rows), "usable_rows": len(items),
+                      "strings": len(chosen), "languages": langs, "pairs": len(pairs),
+                      "placeholder_strings": len(marked),
+                      "batching": f"run-wide, sorted by length, {PROD_TOKEN_LIMIT}-token batches", "beams": {}}
+    save_report(report, args.out)
+    beam5 = None
+    for beam in (5, 2, 1):
+        out, seconds, batches = run_global(pairs, engine, PROD_TOKEN_LIMIT, True, beam_size=beam)
+        per_lang = {}
+        for i, lang in enumerate(langs):
+            part = slice(i * len(chosen), (i + 1) * len(chosen))
+            per_lang[lang] = {"chrf": chrf(out[part], refs[part]),
+                              "placeholders_kept": placeholder_kept_fraction([e for e, _ in chosen], out[part])}
+        p_out, p_seconds, _ = run_global(marked_pairs, engine, PROD_TOKEN_LIMIT, True, beam_size=beam)
+        for i, lang in enumerate(langs):
+            part = slice(i * len(marked), (i + 1) * len(marked))
+            per_lang[lang]["placeholders_kept"] = placeholder_kept_fraction([e for e, _ in marked], p_out[part])
+        beam5 = beam5 or out
+        entry = {"seconds": round(seconds, 2), "pairs_per_hour": round(len(pairs) / seconds * 3600),
+                 "speedup_vs_beam5": round(report["kde4"]["beams"]["beam5"]["seconds"] / seconds, 2) if beam != 5 else 1.0,
+                 "chrf_all": chrf(out, refs),
+                 "placeholders_kept_all": placeholder_kept_fraction([p[1] for p in marked_pairs], p_out),
+                 "placeholder_check_seconds": round(p_seconds, 2),
+                 "identical_to_beam5": identical_fraction(out, beam5), "batches": len(batches),
+                 "peak_memory_mb": peak_memory_mb(), "per_language": per_lang}
+        report["kde4"]["beams"][f"beam{beam}"] = entry
+        print(f"KDE4_RESULT beam {beam}: " + json.dumps({k: v for k, v in entry.items() if k != "per_language"}), flush=True)
+        save_report(report, args.out)
+
+
 def save_report(report, path):
     """Write the report locally, and to s3://BUCKET/runs/RUN_ID/bench/results.json when those are set,
     so the steps already finished survive if the run dies part-way."""
@@ -201,6 +297,8 @@ def parse_args(argv=None):
     parser.add_argument("--with-threads", action="store_true", help="Also time intra_threads=<cores> (run 1: no effect).")
     parser.add_argument("--with-unsorted", action="store_true", help="Also time unsorted run-wide batching.")
     parser.add_argument("--flores-sentences", type=int, default=40)
+    parser.add_argument("--kde4", help="KDE4 spreadsheet (path or s3:// URI): run only the beam 5/2/1 test on it.")
+    parser.add_argument("--kde4-strings", type=int, default=1000, help="English strings sampled from KDE4.")
     return parser.parse_args(argv)
 
 
@@ -223,6 +321,11 @@ def main(argv=None):
               "strategies": []}
     production = Engine(translation.translator, translation.tokenizer)
     production.translate_texts(["Warm up the model."], "de-DE")
+    if args.kde4:
+        run_kde4(args, production, report)
+        report["complete"] = True
+        save_report(report, args.out)
+        return 0
     lengths = [len(production.tokens(text)) for _, text, _ in pairs]
 
     def record(name, change, outputs, seconds, batches, baseline=None, beam_size=5):

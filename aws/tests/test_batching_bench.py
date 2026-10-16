@@ -68,3 +68,44 @@ def test_report_is_only_saved_locally_without_bucket_settings(tmp_path, monkeypa
 def test_default_budgets_go_smaller_not_larger():
     # 4096-token batches stopped the first benchmark run; the default sweep stays at or below production's 1024.
     assert bb.parse_args(["--workload", "w", "--out", "o"]).budgets == [256, 512, 1024]
+
+
+KDE4_LANGS = ["hi", "ar", "bn", "de", "es", "fr", "ja", "mr", "pa", "ta", "te", "zh"]
+
+
+def test_every_kde4_language_has_an_nllb_code():
+    assert all(lang in bb.CODES for lang in KDE4_LANGS)
+
+
+def test_clean_kde4_drops_junk_rows_and_duplicates():
+    langs = ["de", "fr"]
+    rows = [
+        ("Save", "Speichern", "Enregistrer"),
+        ("Save", "Sichern", "Sauver"),                    # duplicate English: keep the first
+        (True, "WAHR", "VRAI"),                           # Excel turned TRUE into a boolean
+        ("one\ntwo\nthree", "eins\nzwei", "un\ndeux"),    # strings glued together
+        ("Open", None, "Ouvrir"),                         # missing reference
+        ("Close %1", "%1 schließen", "Fermer %1"),
+    ]
+    assert bb.clean_kde4(rows, langs) == [
+        ("Save", {"de": "Speichern", "fr": "Enregistrer"}),
+        ("Close %1", {"de": "%1 schließen", "fr": "Fermer %1"}),
+    ]
+
+
+def test_sample_is_deterministic_and_capped():
+    items = list(range(100))
+    assert bb.sample(items, 10, seed=7) == bb.sample(items, 10, seed=7)
+    assert len(bb.sample(items, 10, seed=7)) == 10
+    assert bb.sample(items, 500, seed=7) == items
+
+
+def test_placeholder_kept_fraction_only_counts_strings_with_placeholders():
+    sources = ["Close %1", "Copy %1 to %2", "Plain text", "Open {file}"]
+    outputs = ["Fermer %1", "Copier %2 vers", "Texte", "Ouvrir {file}"]
+    assert bb.placeholder_kept_fraction(sources, outputs) == round(2 / 3, 4)
+
+
+def test_placeholder_items_are_all_rows_whose_english_has_placeholders():
+    items = [("Close %1", {}), ("Plain", {}), ("Open {file}", {}), ("<b>Bold</b>", {})]
+    assert [e for e, _ in bb.placeholder_items(items)] == ["Close %1", "Open {file}", "<b>Bold</b>"]
