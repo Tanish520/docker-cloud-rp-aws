@@ -103,3 +103,16 @@ The "chrF vs A" column in the main table compares against today's *output*, not 
 - **Keep production's simple per-file batching.** Run-wide sorted batching gave at most 2% and roughly doubles peak memory, so it is not worth the complexity on its own.
 - **Never use batches above about 1024 tokens** on this 8 GB machine.
 - **Expected effect on the pipeline:** inference is 99% of Phase 2 time, so a 50-string file should drop from about 21 s to about 9 s at beam 2, and about 5 s at beam 1. Confirm with a full pipeline run after the change.
+
+## 7. Decision (2026-10-16)
+
+The pipeline stays at **beam 5** with today's batching for now. The beam-2 and beam-1 options wait until the Track 1 team has confirmed quality on the full KDE4 set (BLEU, chrF, COMET), because 40 FLORES sentences per language is a small sample. No production code changed in this work; only the benchmark was added.
+
+**Raw data:**
+- Run 1 (steps A–D): `s3://<data-bucket>/runs/ec2-20261016t095926z/` (CloudWatch `/cloud-loc/ec2-runner`).
+- Run 2 (complete): `s3://<data-bucket>/runs/ec2-20261016t103748z/bench/results.json`.
+
+**To repeat the benchmark:**
+```bash
+RUNNER_TASK=batching-bench RUNNER_TIMEOUT_SECONDS=10800 bash aws/infra/run_on_ec2.sh
+```
