@@ -120,6 +120,21 @@ def placeholder_kept_fraction(sources, outputs):
     return round(kept / len(checked), 4)
 
 
+def decoding_cap(batch_lengths, factor=2, extra=10, limit=256):
+    """Longest output allowed for a batch: factor x its longest source + extra, never above CTranslate2's default."""
+    return min(limit, factor * max(batch_lengths) + extra)
+
+
+def cpu_utilization(cpu_seconds, wall_seconds, cores):
+    """Share of the available core time actually used (1.0 = every core busy the whole time)."""
+    return round(cpu_seconds / (wall_seconds * cores), 4) if wall_seconds > 0 else 0.0
+
+
+def process_cpu_seconds():
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    return usage.ru_utime + usage.ru_stime
+
+
 def identical_fraction(a, b):
     return round(sum(x == y for x, y in zip(a, b)) / len(a), 4) if a else 0.0
 
@@ -135,10 +150,10 @@ class Engine:
         self._token_cache = {}
 
     @classmethod
-    def load(cls, model_dir, tokenizer, intra_threads):
+    def load(cls, model_dir, tokenizer, intra_threads, inter_threads=1):
         import ctranslate2
         return cls(ctranslate2.Translator(model_dir, device="auto", compute_type="int8",
-                                          intra_threads=intra_threads), tokenizer)
+                                          intra_threads=intra_threads, inter_threads=inter_threads), tokenizer)
 
     def tokens(self, text):
         if text not in self._token_cache:
@@ -200,6 +215,29 @@ def run_global(pairs, engine, max_tokens, sort, beam_size):
     return outputs, time.perf_counter() - start, batches
 
 
+def run_global_parallel(pairs, engine, max_tokens, beam_size, cap_length=False):
+    """Like run_global, but every batch is queued at once (asynchronous=True) so a translator with
+    inter_threads > 1 works on several batches in parallel. Optionally caps output length per batch."""
+    engine._token_cache.clear()
+    start = time.perf_counter()
+    token_lists = [engine.tokens(text) for _, text, _ in pairs]
+    lengths = [len(t) for t in token_lists]
+    batches = plan_token_batches(lengths, max_tokens, sort=True)
+    pending = []
+    for batch in batches:
+        options = {"max_decoding_length": decoding_cap([lengths[i] for i in batch])} if cap_length else {}
+        futures = engine.translator.translate_batch(
+            [token_lists[i] for i in batch], target_prefix=[[CODES[pairs[i][2]]] for i in batch],
+            beam_size=beam_size, batch_type="examples", max_batch_size=0, asynchronous=True, **options)
+        pending.append((batch, futures))
+    outputs = [None] * len(pairs)
+    for batch, futures in pending:
+        for i, future in zip(batch, futures):
+            hypothesis = future.result().hypotheses[0][1:]
+            outputs[i] = engine.tokenizer.decode(engine.tokenizer.convert_tokens_to_ids(hypothesis), skip_special_tokens=True)
+    return outputs, time.perf_counter() - start, batches
+
+
 def chrf(hypotheses, references):
     try:
         import sacrebleu
@@ -234,11 +272,57 @@ def read_kde4(path):
     return list(rows[0][1:]), rows[1:]
 
 
-def run_kde4(args, engine, report):
-    """Beam 5 / 2 / 1 on a fixed KDE4 sample: speed, chrF against the spreadsheet, placeholder survival."""
+def kde4_sample(args):
     langs, rows = read_kde4(args.kde4)
     items = clean_kde4(rows, langs)
-    chosen = sample(items, args.kde4_strings)
+    return langs, rows, items, sample(items, args.kde4_strings)
+
+
+def run_kde4_parallel(args, engine, translation, report):
+    """Beam 2 on a KDE4 sample: one batch at a time (P0) vs two batches in parallel (P1/P2) vs + length cap (P3)."""
+    import aws_runtime
+    langs, rows, items, chosen = kde4_sample(args)
+    pairs = [("kde4", english, lang) for lang in langs for english, _ in chosen]
+    refs = [r[lang] for lang in langs for _, r in chosen]
+    cores = aws_runtime.cpu_limit()
+    report["kde4_parallel"] = {"source": args.kde4, "usable_rows": len(items), "strings": len(chosen),
+                               "languages": langs, "pairs": len(pairs), "beam_size": 2, "cores": cores, "steps": []}
+    steps = report["kde4_parallel"]["steps"]
+
+    def measure(name, change, run):
+        cpu_before = process_cpu_seconds()
+        out, seconds, batches = run()
+        entry = {"name": name, "change": change, "seconds": round(seconds, 2),
+                 "pairs_per_hour": round(len(pairs) / seconds * 3600),
+                 "cpu_utilization": cpu_utilization(process_cpu_seconds() - cpu_before, seconds, cores),
+                 "batches": len(batches), "chrf_all": chrf(out, refs), "peak_memory_mb": peak_memory_mb()}
+        if steps:
+            entry["speedup_vs_p0"] = round(steps[0]["seconds"] / seconds, 2)
+            entry["identical_to_p0"] = identical_fraction(out, measure.p0)
+        else:
+            measure.p0 = out
+        steps.append(entry)
+        print("PARALLEL_RESULT: " + json.dumps(entry), flush=True)
+        save_report(report, args.out)
+        return entry
+
+    measure("P0_one_batch_at_a_time", "today's engine (default threads), sorted 1024-token batches, beam 2",
+            lambda: run_global(pairs, engine, PROD_TOKEN_LIMIT, True, beam_size=2))
+    engine.translator.unload_model()   # free memory before loading the parallel translator
+    parallel = Engine.load(translation.CT2_MODEL_PATH, translation.tokenizer, intra_threads=1, inter_threads=cores)
+    parallel.translate_texts(["Warm up the model."], "de-DE", beam_size=2)
+    p1 = measure("P1_parallel_batches", f"{cores} batches at once (inter_threads={cores}, intra_threads=1), 1024-token batches",
+                 lambda: run_global_parallel(pairs, parallel, PROD_TOKEN_LIMIT, beam_size=2))
+    p2 = measure("P2_parallel_512", "P1 with 512-token batches",
+                 lambda: run_global_parallel(pairs, parallel, 512, beam_size=2))
+    budget = PROD_TOKEN_LIMIT if p1["seconds"] <= p2["seconds"] else 512
+    measure("P3_length_cap", f"best of P1/P2 ({budget}-token batches) + output capped at 2x longest input + 10 tokens",
+            lambda: run_global_parallel(pairs, parallel, budget, beam_size=2, cap_length=True))
+
+
+def run_kde4(args, engine, report):
+    """Beam 5 / 2 / 1 on a fixed KDE4 sample: speed, chrF against the spreadsheet, placeholder survival."""
+    langs, rows, items, chosen = kde4_sample(args)
     pairs = [("kde4", english, lang) for lang in langs for english, _ in chosen]
     marked = placeholder_items(items)
     marked_pairs = [("kde4", english, lang) for lang in langs for english, _ in marked]
@@ -299,6 +383,8 @@ def parse_args(argv=None):
     parser.add_argument("--flores-sentences", type=int, default=40)
     parser.add_argument("--kde4", help="KDE4 spreadsheet (path or s3:// URI): run only the beam 5/2/1 test on it.")
     parser.add_argument("--kde4-strings", type=int, default=1000, help="English strings sampled from KDE4.")
+    parser.add_argument("--kde4-parallel", action="store_true",
+                        help="With --kde4: test parallel batches and a length cap at beam 2 instead of beam 5/2/1.")
     return parser.parse_args(argv)
 
 
@@ -322,7 +408,10 @@ def main(argv=None):
     production = Engine(translation.translator, translation.tokenizer)
     production.translate_texts(["Warm up the model."], "de-DE")
     if args.kde4:
-        run_kde4(args, production, report)
+        if args.kde4_parallel:
+            run_kde4_parallel(args, production, translation, report)
+        else:
+            run_kde4(args, production, report)
         report["complete"] = True
         save_report(report, args.out)
         return 0

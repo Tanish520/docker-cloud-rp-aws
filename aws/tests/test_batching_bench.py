@@ -109,3 +109,18 @@ def test_placeholder_kept_fraction_only_counts_strings_with_placeholders():
 def test_placeholder_items_are_all_rows_whose_english_has_placeholders():
     items = [("Close %1", {}), ("Plain", {}), ("Open {file}", {}), ("<b>Bold</b>", {})]
     assert [e for e, _ in bb.placeholder_items(items)] == ["Close %1", "Open {file}", "<b>Bold</b>"]
+
+
+def test_decoding_cap_scales_with_the_longest_source_in_the_batch():
+    # Sorted batches hold similar lengths, so one cap per batch fits every item in it.
+    assert bb.decoding_cap([4, 6, 5]) == 22          # 2 x 6 + 10
+    assert bb.decoding_cap([200]) == 256             # never above CTranslate2's default limit
+
+
+def test_cpu_utilization_is_cpu_time_over_available_core_time():
+    assert bb.cpu_utilization(cpu_seconds=60.0, wall_seconds=50.0, cores=2) == 0.6
+    assert bb.cpu_utilization(cpu_seconds=1.0, wall_seconds=0.0, cores=2) == 0.0
+
+
+def test_parallel_mode_is_an_option():
+    assert bb.parse_args(["--workload", "w", "--out", "o", "--kde4", "k.xlsx", "--kde4-parallel"]).kde4_parallel
