@@ -10,7 +10,7 @@ set -euo pipefail
 : "${AWS_REGION:?AWS_REGION must be set}"
 export RUN_ID BUCKET DB_HOST AWS_REGION
 export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-$AWS_REGION}"
-export RESET_TM="${RESET_TM:-true}"
+export RESET_TM="${RESET_TM:-false}"
 export PHASE2_CPUSET="${PHASE2_CPUSET:-0,1}"
 export DB_NAME="${DB_NAME:-localization}"
 export PIPELINE_CONFIG="${PIPELINE_CONFIG:-aws/config.json}"

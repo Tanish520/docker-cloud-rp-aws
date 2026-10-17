@@ -37,8 +37,8 @@ aws codepipeline start-pipeline-execution --region ap-south-1 --name cloud-loc-p
 
 The command prints a `pipelineExecutionId`; that is the **run ID** used in S3 paths, logs and telemetry.
 
-- `RESET_TM` (pipeline variable, default `true`) empties the translation memory before Phase 2, so the run starts at a 0% cache rate like the report's runs. To measure cache reuse, keep the memory from earlier runs:
-  `aws codepipeline start-pipeline-execution --region ap-south-1 --name cloud-loc-pipeline --variables name=RESET_TM,value=false`
+- `RESET_TM` (pipeline variable, default `false`) keeps the translation memory between runs, so each run only translates strings that are new or changed. Entries are tied to the engine (model and output-changing settings), so changing those never reuses older translations. To start from an empty memory (0% cache rate, like the report's runs):
+  `aws codepipeline start-pipeline-execution --region ap-south-1 --name cloud-loc-pipeline --variables name=RESET_TM,value=true`
 - The first run converts the model (about 10–15 extra minutes) and caches it in `s3://<data-bucket>/models/`; later runs reuse it.
 - If a stage fails, fix the cause and click **Retry** on that stage in the CodePipeline console. A retry keeps the same run ID and the same pipeline variables. Phase 2 then translates only the languages whose raw files are still in `runs/<run-id>/raw/` (finished ones were removed), and the telemetry export keeps the newest row per file. With `RESET_TM=true` the retry empties the translation memory again, so it still starts from a 0% cache.
 - Watch progress in the CodePipeline console, or:
@@ -49,7 +49,7 @@ The command prints a `pipelineExecutionId`; that is the **run ID** used in S3 pa
 In this account CodeBuild refuses to start any build (`AccountLimitExceededException: Cannot have more than 0 builds in queue for the account`). That is an account restriction only AWS Support can lift. Until then, run the same three phases on a temporary EC2 machine:
 
 ```bash
-bash aws/infra/run_on_ec2.sh                  # add RESET_TM=false in front to keep the translation memory
+bash aws/infra/run_on_ec2.sh                  # add RESET_TM=true in front to empty the translation memory first
 ```
 
 How it works:

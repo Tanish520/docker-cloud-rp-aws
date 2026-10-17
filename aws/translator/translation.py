@@ -176,6 +176,11 @@ def get_sql_connection(conn_str):
         print(f"❌ SQL Connection Error: {e}")
         return None, 0
 
+def engine_version():
+    """What produced a translation: the model plus every setting that changes the output. Stored with each
+    memory entry and matched on lookup, so changing any of them never reuses older translations."""
+    return f"{HF_MODEL_NAME}|ct2-int8|beam={BEAM_SIZE}|cap=2x+10|placeholders=square|unk=english"
+
 def tm_key(text):
     """Translation-memory key: SHA-256 of the source text, so strings of any length fit (db_admin.py)."""
     return hashlib.sha256(text.encode("utf-8")).digest()
@@ -194,8 +199,8 @@ def bulk_query_translations(cursor, source_texts, target_lang):
             chunk = unique_texts[i:i + chunk_size]
             placeholders = ','.join(['?'] * len(chunk))
             
-            query = f"SELECT SourceText, TranslatedText FROM Translations WHERE TargetLang=? AND SourceHash IN ({placeholders})"
-            params = [target_lang] + [tm_key(text) for text in chunk]
+            query = f"SELECT SourceText, TranslatedText FROM Translations WHERE TargetLang=? AND EngineVersion=? AND SourceHash IN ({placeholders})"
+            params = [target_lang, engine_version()] + [tm_key(text) for text in chunk]
             
             cursor.execute(query, params)
             for row in cursor.fetchall():
@@ -215,11 +220,12 @@ def bulk_save_translations(cursor, translation_tuples):
         cursor.fast_executemany = True 
         query = """
         MERGE INTO Translations AS target
-        USING (SELECT ? AS SourceHash, ? AS TargetLang) AS source
-        ON (target.SourceHash = source.SourceHash AND target.TargetLang = source.TargetLang)
+        USING (SELECT ? AS SourceHash, ? AS TargetLang, ? AS EngineVersion) AS source
+        ON (target.SourceHash = source.SourceHash AND target.TargetLang = source.TargetLang
+            AND target.EngineVersion = source.EngineVersion)
         WHEN MATCHED THEN UPDATE SET TranslatedText = ?
-        WHEN NOT MATCHED THEN INSERT (SourceHash, SourceText, TargetLang, TranslatedText, ModelName, LastUpdated)
-        VALUES (?, ?, ?, ?, ?, GETDATE());
+        WHEN NOT MATCHED THEN INSERT (SourceHash, SourceText, TargetLang, EngineVersion, TranslatedText, ModelName, LastUpdated)
+        VALUES (?, ?, ?, ?, ?, ?, GETDATE());
         """
         cursor.executemany(query, translation_tuples)
         return profiler.stop_timer("sql_write_latency")
@@ -406,8 +412,8 @@ async def process_xlf_file(local_path, target_lang, conn, exporter):
                         target_node.text = trans
                     
                     src = current_batch_texts[b_idx]
-                    key = tm_key(src)
-                    db_write_batch.append((key, target_lang, trans, key, src, target_lang, trans, "nllb-600M-ct2"))
+                    key, version = tm_key(src), engine_version()
+                    db_write_batch.append((key, target_lang, version, trans, key, src, target_lang, version, trans, "nllb-600M-ct2"))
                     
                     multiplier = LANG_TOKEN_MULTIPLIERS.get(target_lang, 0.5)
                     output_tokens = len(trans) / (4.0 * multiplier)

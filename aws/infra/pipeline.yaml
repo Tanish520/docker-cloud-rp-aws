@@ -495,8 +495,8 @@ Resources:
         Location: !Ref ArtifactBucket
       Variables:
         - Name: RESET_TM
-          DefaultValue: "true"
-          Description: "true empties the translation memory before Phase 2 (0% cache start)."
+          DefaultValue: "false"
+          Description: "false keeps the translation memory between runs; true empties it before Phase 2 (0% cache start)."
       Stages:
         - Name: Source
           Actions:

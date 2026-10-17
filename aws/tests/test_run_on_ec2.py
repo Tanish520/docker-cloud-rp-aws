@@ -73,7 +73,7 @@ def test_successful_run_uploads_source_runs_all_phases_logs_to_cloudwatch_and_te
     [send] = [c for c in calls if c.startswith("aws ssm send-command")]
     assert "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=/cloud-loc/ec2-runner" in send
     command = json.loads(params.read_text())["commands"][0]
-    assert "bash aws/runner/run_all.sh" in command and "RESET_TM=true" in command
+    assert "bash aws/runner/run_all.sh" in command and "RESET_TM=false" in command
     assert "DB_SECRET_ARN='arn:aws:secretsmanager:ap-south-1:1:secret:rds!db-x'" in command  # RDS ARNs contain '!'
     assert calls[-1].startswith("aws ec2 terminate-instances") and "i-0abc" in calls[-1]
 

@@ -62,7 +62,7 @@ def test_runs_the_three_phases_in_order_with_credentials_and_model_key(run_all):
     phase2 = calls[1]
     assert "MODEL_KEY=nllb-200-distilled-600M_int8_ct2-4.7.1" in phase2
     assert "DB_USER=dbadmin DB_PASSWORD=p;a}ss q " in phase2
-    assert "RESET_TM=true CPUSET=0,1 REGION=ap-south-1" in phase2
+    assert "RESET_TM=false CPUSET=0,1 REGION=ap-south-1" in phase2
 
 
 def test_phase1_failure_stops_the_run(run_all):

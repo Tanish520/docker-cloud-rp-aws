@@ -62,5 +62,5 @@ Next steps:
      (The automatic first pipeline run fails at Source while the connection is pending; that is expected.)
   2. Start a run:
      aws codepipeline start-pipeline-execution --region $REGION --name $PIPELINE
-     Add --variables name=RESET_TM,value=false to keep the translation memory from earlier runs.
+     Add --variables name=RESET_TM,value=true to empty the translation memory first (0% cache start).
 EOF

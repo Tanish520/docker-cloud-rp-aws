@@ -11,20 +11,22 @@ import pyodbc
 import aws_runtime
 
 CREATE_DATABASE_SQL = "IF DB_ID(N'{name}') IS NULL CREATE DATABASE [{name}];"
-# Keyed by a SHA-256 of the text (translation.tm_key): a key holds at most 900 bytes, so keying by the
-# text itself capped strings at 434 characters. The memory is a cache, so a table in that old layout
-# is dropped and recreated.
-CREATE_TABLE_SQL = """IF OBJECT_ID(N'dbo.Translations', N'U') IS NOT NULL AND COL_LENGTH(N'dbo.Translations', N'SourceHash') IS NULL
+# Keyed by language, the engine that translated (translation.engine_version: model and output-changing
+# settings, so a new setting never reuses old translations) and a SHA-256 of the text (translation.tm_key;
+# keying by the text itself capped strings at 434 characters). Language first keeps one language's rows
+# together for the per-run preload. The memory is a cache, so a table in an older layout is recreated.
+CREATE_TABLE_SQL = """IF OBJECT_ID(N'dbo.Translations', N'U') IS NOT NULL AND COL_LENGTH(N'dbo.Translations', N'EngineVersion') IS NULL
     DROP TABLE dbo.Translations;
 IF OBJECT_ID(N'dbo.Translations', N'U') IS NULL
 CREATE TABLE dbo.Translations (
     SourceHash     BINARY(32)    NOT NULL,
     SourceText     NVARCHAR(MAX) NOT NULL,
     TargetLang     NVARCHAR(16)  NOT NULL,
+    EngineVersion  NVARCHAR(200) NOT NULL,
     TranslatedText NVARCHAR(MAX) NULL,
     ModelName      NVARCHAR(100) NULL,
     LastUpdated    DATETIME2     NULL,
-    CONSTRAINT PK_Translations PRIMARY KEY (SourceHash, TargetLang)
+    CONSTRAINT PK_Translations PRIMARY KEY (TargetLang, EngineVersion, SourceHash)
 );"""
 RESET_SQL = "DELETE FROM dbo.Translations;"
 

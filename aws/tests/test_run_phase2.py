@@ -123,3 +123,10 @@ def test_translator_gets_the_chosen_config(run_phase2, tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     copied = tmp_path / "repo" / "aws" / "translator" / "config.json"
     assert copied.read_text(encoding="utf-8") == '{"InputFiles": ["kde4.resx"]}'
+
+
+def test_memory_is_kept_unless_a_reset_is_asked_for(run_phase2):
+    _, kept = run_phase2()
+    _, emptied = run_phase2(RESET_TM="true")
+    assert not any("db_admin.py reset" in c for c in kept)
+    assert any("db_admin.py reset" in c for c in emptied)

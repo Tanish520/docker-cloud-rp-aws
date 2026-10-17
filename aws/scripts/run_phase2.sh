@@ -10,7 +10,7 @@ set -euo pipefail
 : "${DB_PASSWORD:?DB_PASSWORD must be set}"
 : "${MODEL_KEY:?MODEL_KEY must be set}"
 PHASE2_CPUSET="${PHASE2_CPUSET:-0,1}"
-RESET_TM="${RESET_TM:-true}"
+RESET_TM="${RESET_TM:-false}"
 PHASE2_TASK="${PHASE2_TASK:-translate}"   # translate | bench
 export BENCH_ARGS="${BENCH_ARGS:-}"      # extra batching_bench.py options, e.g. --kde4 s3://...
 export DB_NAME="${DB_NAME:-localization}"

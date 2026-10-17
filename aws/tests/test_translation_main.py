@@ -406,10 +406,12 @@ def test_long_strings_are_looked_up_and_saved_by_their_hash(translation, monkeyp
 
     [(query, params)] = conn.cursor_.queries
     assert "SourceHash IN (?,?)" in query
-    assert params[0] == "es-ES" and sorted(params[1:]) == sorted([translation.tm_key("short"), translation.tm_key(long_text)])
-    saved = {row[4]: row for row in conn.cursor_.saved}                        # (key, lang, text, key, source, lang, text, model)
+    assert params[:2] == ["es-ES", translation.engine_version()]
+    assert sorted(params[2:]) == sorted([translation.tm_key("short"), translation.tm_key(long_text)])
+    saved = {saved_source(row): row for row in conn.cursor_.saved}
     assert set(saved) == {"short", long_text}
-    assert saved[long_text][:4] == (translation.tm_key(long_text), "es-ES", long_text.upper(), translation.tm_key(long_text))
+    key, version = translation.tm_key(long_text), translation.engine_version()
+    assert saved[long_text] == (key, "es-ES", version, long_text.upper(), key, long_text, "es-ES", version, long_text.upper(), "nllb-600M-ct2")
 
 
 def test_output_with_a_character_the_model_cannot_write_is_dropped(translation, monkeypatch):
@@ -430,5 +432,18 @@ def test_untranslatable_strings_stay_empty_are_not_saved_and_are_reported(transl
     asyncio.run(translation.process_xlf_file(str(path), "zh-CN", conn, None))
 
     assert targets(path) == [None, "打开"]                    # Phase 3 keeps the English for an empty target
-    assert [row[4] for row in conn.cursor_.saved] == ["Open"]
+    assert [saved_source(row) for row in conn.cursor_.saved] == ["Open"]
     assert "1 string(s) kept in English" in capsys.readouterr().out
+
+
+def saved_source(row):
+    # MERGE parameters: (key, lang, version, text, key, source, lang, version, text, model)
+    return row[5]
+
+
+def test_engine_version_names_the_model_and_every_setting_that_changes_output(translation, monkeypatch):
+    version = translation.engine_version()
+    for part in ("facebook/nllb-200-distilled-600M", "ct2-int8", "beam=2", "cap=2x+10", "placeholders=square", "unk=english"):
+        assert part in version
+    monkeypatch.setattr(translation, "BEAM_SIZE", 5)
+    assert "beam=5" in translation.engine_version()        # a new setting never reuses old translations

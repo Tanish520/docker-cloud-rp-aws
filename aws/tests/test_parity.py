@@ -35,7 +35,7 @@ def test_translation_shared_code_is_identical():
     # of the text so strings of any length fit (section 11).
     exclude = ("main", "translate_local", "process_xlf_file", "translator", "BATCH_SIZE", "TOKEN_LIMIT",
                "CHUNK_SIZE", "BEAM_SIZE", "ENGINE_WORKERS", "LANG_TOKEN_MULTIPLIERS",
-               "tm_key", "bulk_query_translations", "bulk_save_translations")
+               "tm_key", "engine_version", "bulk_query_translations", "bulk_save_translations")
     assert shared_top_level(AWS_TRANSLATION, exclude) == shared_top_level(AZ_TRANSLATION, exclude)
 
 

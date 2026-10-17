@@ -2,7 +2,7 @@
 # Run the whole pipeline (Phases 1-3) on a temporary EC2 machine instead of CodeBuild.
 # The last commit is uploaded to S3, the machine runs aws/runner/run_all.sh through SSM,
 # its output goes to CloudWatch Logs, and the machine is terminated afterwards.
-# Settings (environment variables): AWS_REGION, STACK_NAME, RESET_TM (default true),
+# Settings (environment variables): AWS_REGION, STACK_NAME, RESET_TM (default false: keep the translation memory),
 # PHASE2_CPUSET (default 0,1), RUNNER_POLL_SECONDS (default 20),
 # RUNNER_TASK (pipeline = Phases 1-3, default; batching-bench = the batching benchmark),
 # RUNNER_TIMEOUT_SECONDS (default 7200), BENCH_ARGS (extra benchmark options, e.g. --kde4 s3://...),
@@ -11,7 +11,7 @@ set -euo pipefail
 
 REGION="${AWS_REGION:-ap-south-1}"
 STACK_NAME="${STACK_NAME:-cloud-loc}"
-RESET_TM="${RESET_TM:-true}"
+RESET_TM="${RESET_TM:-false}"
 PHASE2_CPUSET="${PHASE2_CPUSET:-0,1}"
 POLL="${RUNNER_POLL_SECONDS:-20}"
 RUNNER_TASK="${RUNNER_TASK:-pipeline}"

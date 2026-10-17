@@ -111,7 +111,7 @@ def test_pipeline_is_manual_with_four_stages_and_shared_run_id():
     assert [s["Name"] for s in stages] == ["Source", "Phase1", "Phase2", "Phase3"]
     assert stages[0]["Actions"][0]["Configuration"]["DetectChanges"] == "false"
     [variable] = pipeline["Variables"]
-    assert variable["Name"] == "RESET_TM" and variable["DefaultValue"] == "true"
+    assert variable["Name"] == "RESET_TM" and variable["DefaultValue"] == "false"
     for stage in stages[1:]:
         assert action_env(stage)["RUN_ID"] == "#{codepipeline.PipelineExecutionId}"
     assert action_env(stages[2])["RESET_TM"] == "#{variables.RESET_TM}"
