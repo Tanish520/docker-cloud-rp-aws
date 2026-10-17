@@ -185,29 +185,43 @@ def tm_key(text):
     """Translation-memory key: SHA-256 of the source text, so strings of any length fit (db_admin.py)."""
     return hashlib.sha256(text.encode("utf-8")).digest()
 
+# Translation memory for this run: target_lang -> {SourceHash: translation}. Each language is loaded from the
+# database in one query the first time it is needed; strings translated during the run are added as they are
+# saved, so later files reuse them without asking the database again.
+memory = {}
+added_in_run = set()          # (target_lang, SourceHash) of entries translated during this run
+file_extra = {}               # per-file counters reported in RESEARCH_DATA (reset by process_xlf_file)
+
+def reset_file_extra():
+    file_extra.clear()
+    file_extra.update({"tm_db_queries": 0, "tm_lookup_ms": 0.0, "tm_hits_in_run": 0, "model_strings": 0,
+                       "real_input_tokens": 0, "real_output_tokens": 0, "padded_positions": 0, "real_positions": 0})
+
+def load_memory(cursor, target_lang):
+    profiler.counters["sql_reads"] += 1
+    file_extra["tm_db_queries"] += 1
+    cursor.execute("SELECT SourceHash, TranslatedText FROM Translations WHERE TargetLang=? AND EngineVersion=?",
+                   [target_lang, engine_version()])
+    memory[target_lang] = {bytes(row[0]): row[1] for row in cursor.fetchall()}
+
 def bulk_query_translations(cursor, source_texts, target_lang):
     if not source_texts: return {}, 0
-    
-    profiler.counters["sql_reads"] += 1
+
     profiler.start_timer("sql_read_latency")
-    
     translations_map = {}
     try:
-        unique_texts = list(set(source_texts))
-        chunk_size = 1000
-        for i in range(0, len(unique_texts), chunk_size):
-            chunk = unique_texts[i:i + chunk_size]
-            placeholders = ','.join(['?'] * len(chunk))
-            
-            query = f"SELECT SourceText, TranslatedText FROM Translations WHERE TargetLang=? AND EngineVersion=? AND SourceHash IN ({placeholders})"
-            params = [target_lang, engine_version()] + [tm_key(text) for text in chunk]
-            
-            cursor.execute(query, params)
-            for row in cursor.fetchall():
-                translations_map[row[0]] = row[1]
-                
-        return translations_map, profiler.stop_timer("sql_read_latency")
-    except Exception as e: 
+        if target_lang not in memory:
+            load_memory(cursor, target_lang)
+        known = memory[target_lang]
+        for text in set(source_texts):
+            key = tm_key(text)
+            if key in known:
+                translations_map[text] = known[key]
+                file_extra["tm_hits_in_run"] += (target_lang, key) in added_in_run
+        lookup_ms = profiler.stop_timer("sql_read_latency")
+        file_extra["tm_lookup_ms"] += lookup_ms
+        return translations_map, lookup_ms
+    except Exception as e:
         print(f"❌ SQL Bulk Query Error: {e}")
         return {}, profiler.stop_timer("sql_read_latency")
 
@@ -259,12 +273,16 @@ def translate_local(texts, target_lang):
                 encoded_ids = tokenizer.encode(text, truncation=True, max_length=TOKEN_LIMIT)
                 source_tokens.append(tokenizer.convert_ids_to_tokens(encoded_ids))
             lengths = [len(tokens) for tokens in source_tokens]
+            file_extra["model_strings"] = file_extra.get("model_strings", 0) + len(batch)
+            file_extra["real_input_tokens"] = file_extra.get("real_input_tokens", 0) + sum(lengths)
 
             # 2. Shortest-first batches of at most TOKEN_LIMIT tokens (little padding), all queued at
             # once so both engine workers stay busy. Output is capped at 2x the longest input + 10
             # tokens so one runaway string cannot hold up its batch (BATCHING_RESULTS.md section 9).
             pending = []
             for group in plan_token_batches(lengths, TOKEN_LIMIT):
+                file_extra["padded_positions"] = file_extra.get("padded_positions", 0) + max(lengths[i] for i in group) * len(group)
+                file_extra["real_positions"] = file_extra.get("real_positions", 0) + sum(lengths[i] for i in group)
                 pending.append((group, translator.translate_batch(
                     [source_tokens[i] for i in group],
                     target_prefix=[[tgt_token]] * len(group),
@@ -280,6 +298,7 @@ def translate_local(texts, target_lang):
                 for i, future in zip(group, futures):
                     # Drop the language token prefix from the beginning
                     target_tokens = future.result().hypotheses[0][1:]
+                    file_extra["real_output_tokens"] = file_extra.get("real_output_tokens", 0) + len(target_tokens)
 
                     # <unk> = a character missing from NLLB's vocabulary (some CJK words). Decoding would
                     # delete it and leave "" or a word with a hole, so the string is left untranslated.
@@ -328,7 +347,8 @@ async def process_xlf_file(local_path, target_lang, conn, exporter):
     except ET.ParseError as e: return {"total_api_time_ms": 0, "total_sql_time_ms": 0, "total_commit_time_ms": 0}, 0, 0, 0, 0
     
     cursor = conn.cursor()
-    file_stats = {"total_api_time_ms": 0, "total_sql_time_ms": 0, "total_commit_time_ms": 0}
+    reset_file_extra()
+    file_stats = {"total_api_time_ms": 0, "total_sql_time_ms": 0, "total_commit_time_ms": 0, "extra": file_extra}
     total_source_chars = total_translated_chars = 0  
     missing_units = [] 
     
@@ -414,6 +434,8 @@ async def process_xlf_file(local_path, target_lang, conn, exporter):
                     src = current_batch_texts[b_idx]
                     key, version = tm_key(src), engine_version()
                     db_write_batch.append((key, target_lang, version, trans, key, src, target_lang, version, trans, "nllb-600M-ct2"))
+                    memory.setdefault(target_lang, {})[key] = trans
+                    added_in_run.add((target_lang, key))
                     
                     multiplier = LANG_TOKEN_MULTIPLIERS.get(target_lang, 0.5)
                     output_tokens = len(trans) / (4.0 * multiplier)
@@ -454,6 +476,10 @@ async def process_xlf_file(local_path, target_lang, conn, exporter):
     mm = stats_module.stats.stats_recorder.new_measurement_map()
     mm.measure_float_put(m_overhead, profiler.counters["telemetry_overhead_ms"])
     profiler.measure_telemetry_overhead(mm.record, tag_map_module.TagMap())
+
+    file_extra["padding_pct"] = round(100 * (1 - file_extra["real_positions"] / file_extra["padded_positions"]), 2) if file_extra["padded_positions"] else 0.0
+    file_extra["tm_lookup_ms"] = round(file_extra["tm_lookup_ms"], 3)
+    file_stats["extra"] = dict(file_extra)
 
     del translations_map
     del all_source_texts
@@ -617,6 +643,7 @@ async def main(config_path):
                         "api_throttled_429": profiler.counters.get("api_throttled", 0)
                     }
                     metrics_payload.update(aws_runtime.extra_fields())
+                    metrics_payload.update(file_stats.get("extra", {}))
                     
                     logger.info(f"📊 RESEARCH_DATA: {json.dumps(metrics_payload)}")
                     if az_handler:

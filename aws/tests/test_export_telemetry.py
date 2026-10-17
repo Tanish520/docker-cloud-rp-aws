@@ -88,3 +88,9 @@ def test_collect_reads_every_line_of_a_batched_event():
     ])
     rows = et.collect(FakeLogs([{"events": [{"message": message}]}]), "/cloud-loc/ec2-runner", "r1")
     assert [r["target_lang"] for r in rows] == ["de-DE", "es-ES"]
+
+
+def test_memory_and_real_token_counters_are_exported():
+    for field in ("tm_db_queries", "tm_lookup_ms", "tm_hits_in_run", "model_strings",
+                  "real_input_tokens", "real_output_tokens", "padding_pct"):
+        assert field in et.AWS_FIELDS

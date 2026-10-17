@@ -343,23 +343,24 @@ def test_punjabi_targets_its_nllb_language(translation, monkeypatch):
 
 
 class RecordingCursor:
-    def __init__(self):
+    def __init__(self, memory_rows=()):
         self.saved, self.queries = [], []
+        self.memory_rows = list(memory_rows)       # (SourceHash, TranslatedText) the database holds
         self.fast_executemany = False
 
     def execute(self, query, params):
         self.queries.append((query, params))
 
     def fetchall(self):
-        return []                                   # empty translation memory
+        return self.memory_rows
 
     def executemany(self, query, rows):
         self.saved.extend(rows)
 
 
 class RecordingConn:
-    def __init__(self):
-        self.cursor_ = RecordingCursor()
+    def __init__(self, memory_rows=()):
+        self.cursor_ = RecordingCursor(memory_rows)
 
     def cursor(self):
         return self.cursor_
@@ -368,9 +369,9 @@ class RecordingConn:
         pass
 
 
-def xlf_with(tmp_path, sources):
+def xlf_with(tmp_path, sources, name="kde4.es-ES.xlf"):
     units = "".join(f'<trans-unit id="S{i}"><source>{text}</source><target /></trans-unit>' for i, text in enumerate(sources))
-    path = tmp_path / "kde4.es-ES.xlf"
+    path = tmp_path / name
     path.write_text(f"<xliff version=\"1.2\"><file><body>{units}</body></file></xliff>", encoding="utf-8")
     return path
 
@@ -405,9 +406,7 @@ def test_long_strings_are_looked_up_and_saved_by_their_hash(translation, monkeyp
     asyncio.run(translation.process_xlf_file(str(path), "es-ES", conn, None))
 
     [(query, params)] = conn.cursor_.queries
-    assert "SourceHash IN (?,?)" in query
-    assert params[:2] == ["es-ES", translation.engine_version()]
-    assert sorted(params[2:]) == sorted([translation.tm_key("short"), translation.tm_key(long_text)])
+    assert params == ["es-ES", translation.engine_version()]
     saved = {saved_source(row): row for row in conn.cursor_.saved}
     assert set(saved) == {"short", long_text}
     key, version = translation.tm_key(long_text), translation.engine_version()
@@ -447,3 +446,35 @@ def test_engine_version_names_the_model_and_every_setting_that_changes_output(tr
         assert part in version
     monkeypatch.setattr(translation, "BEAM_SIZE", 5)
     assert "beam=5" in translation.engine_version()        # a new setting never reuses old translations
+
+
+def test_a_language_s_memory_is_loaded_once_per_run(translation, monkeypatch, tmp_path):
+    model = use_model(translation, monkeypatch, lambda s: s.upper())
+    conn = RecordingConn(memory_rows=[(translation.tm_key("Open"), "Öffnen")])
+    first = xlf_with(tmp_path, ["Open", "Close"], "a.de-DE.xlf")
+    second = xlf_with(tmp_path, ["Open", "Close", "Save"], "b.de-DE.xlf")
+
+    asyncio.run(translation.process_xlf_file(str(first), "de-DE", conn, None))
+    stats, *_ = asyncio.run(translation.process_xlf_file(str(second), "de-DE", conn, None))
+
+    [(query, params)] = conn.cursor_.queries                         # one database query for both files
+    assert "SELECT SourceHash, TranslatedText" in query and "TargetLang=? AND EngineVersion=?" in query
+    assert params == ["de-DE", translation.engine_version()]
+    assert targets(first) == ["Öffnen", "CLOSE"]
+    assert targets(second) == ["Öffnen", "CLOSE", "SAVE"]             # "Close" reused from the first file
+    assert model.seen == ["Close", "Save"]
+    assert stats["extra"]["tm_db_queries"] == 0 and stats["extra"]["tm_hits_in_run"] == 1
+
+
+def test_file_reports_lookup_and_real_token_counts(translation, monkeypatch, tmp_path):
+    use_model(translation, monkeypatch, lambda s: s + " x")
+    monkeypatch.setattr(translation, "TOKEN_LIMIT", 10)
+    path = xlf_with(tmp_path, ["a", "b b b"])
+
+    stats, *_ = asyncio.run(translation.process_xlf_file(str(path), "es-ES", RecordingConn(), None))
+
+    extra = stats["extra"]
+    assert extra["tm_db_queries"] == 1 and extra["tm_lookup_ms"] >= 0
+    assert extra["model_strings"] == 2
+    assert extra["real_input_tokens"] == 4 and extra["real_output_tokens"] == 6     # "a x" + "b b b x"
+    assert extra["padding_pct"] == 33.33                                      # one batch [1, 3]: 2 of 6 positions padded
