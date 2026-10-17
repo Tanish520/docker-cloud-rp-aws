@@ -11,14 +11,20 @@ import pyodbc
 import aws_runtime
 
 CREATE_DATABASE_SQL = "IF DB_ID(N'{name}') IS NULL CREATE DATABASE [{name}];"
-CREATE_TABLE_SQL = """IF OBJECT_ID(N'dbo.Translations', N'U') IS NULL
+# Keyed by a SHA-256 of the text (translation.tm_key): a key holds at most 900 bytes, so keying by the
+# text itself capped strings at 434 characters. The memory is a cache, so a table in that old layout
+# is dropped and recreated.
+CREATE_TABLE_SQL = """IF OBJECT_ID(N'dbo.Translations', N'U') IS NOT NULL AND COL_LENGTH(N'dbo.Translations', N'SourceHash') IS NULL
+    DROP TABLE dbo.Translations;
+IF OBJECT_ID(N'dbo.Translations', N'U') IS NULL
 CREATE TABLE dbo.Translations (
-    SourceText     NVARCHAR(434) NOT NULL,  -- 2*(434+16) = 900 bytes, SQL Server's clustered-key limit
+    SourceHash     BINARY(32)    NOT NULL,
+    SourceText     NVARCHAR(MAX) NOT NULL,
     TargetLang     NVARCHAR(16)  NOT NULL,
     TranslatedText NVARCHAR(MAX) NULL,
     ModelName      NVARCHAR(100) NULL,
     LastUpdated    DATETIME2     NULL,
-    CONSTRAINT PK_Translations PRIMARY KEY (SourceText, TargetLang)
+    CONSTRAINT PK_Translations PRIMARY KEY (SourceHash, TargetLang)
 );"""
 RESET_SQL = "DELETE FROM dbo.Translations;"
 

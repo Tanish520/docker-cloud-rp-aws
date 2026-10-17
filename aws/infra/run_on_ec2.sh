@@ -6,7 +6,7 @@
 # PHASE2_CPUSET (default 0,1), RUNNER_POLL_SECONDS (default 20),
 # RUNNER_TASK (pipeline = Phases 1-3, default; batching-bench = the batching benchmark),
 # RUNNER_TIMEOUT_SECONDS (default 7200), BENCH_ARGS (extra benchmark options, e.g. --kde4 s3://...),
-# PIPELINE_CONFIG (default aws/config.json), INPUT_S3 (a .resx copied into source-folder/ first).
+# PIPELINE_CONFIG (default aws/config.json), INPUT_S3 (space-separated .resx files copied into source-folder/ first).
 set -euo pipefail
 
 REGION="${AWS_REGION:-ap-south-1}"

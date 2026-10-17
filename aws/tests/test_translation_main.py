@@ -344,17 +344,17 @@ def test_punjabi_targets_its_nllb_language(translation, monkeypatch):
 
 class RecordingCursor:
     def __init__(self):
-        self.saved = []
+        self.saved, self.queries = [], []
         self.fast_executemany = False
 
     def execute(self, query, params):
-        pass
+        self.queries.append((query, params))
 
     def fetchall(self):
         return []                                   # empty translation memory
 
     def executemany(self, query, rows):
-        self.saved.extend(row[0] for row in rows)
+        self.saved.extend(rows)
 
 
 class RecordingConn:
@@ -391,13 +391,44 @@ def test_file_is_translated_in_chunks_of_similar_length(translation, monkeypatch
     assert targets(path) == ["C C C", "A", "D D D D", "B B"]
 
 
-def test_strings_too_long_for_the_memory_key_are_translated_but_not_saved(translation, monkeypatch, tmp_path):
+def test_memory_is_keyed_by_a_hash_of_the_text(translation):
+    key = translation.tm_key("Open %1")
+    assert len(key) == 32 and key == translation.tm_key("Open %1") and key != translation.tm_key("Open %2")
+
+
+def test_long_strings_are_looked_up_and_saved_by_their_hash(translation, monkeypatch, tmp_path):
     use_model(translation, monkeypatch, lambda s: s.upper())
-    monkeypatch.setattr(translation, "TM_KEY_LIMIT", 5)
     conn = RecordingConn()
-    path = xlf_with(tmp_path, ["short", "much longer"])
+    long_text = " ".join(["word"] * 150)                                      # 749 characters
+    path = xlf_with(tmp_path, ["short", long_text])
 
     asyncio.run(translation.process_xlf_file(str(path), "es-ES", conn, None))
 
-    assert targets(path) == ["SHORT", "MUCH LONGER"]
-    assert conn.cursor_.saved == ["short"]
+    [(query, params)] = conn.cursor_.queries
+    assert "SourceHash IN (?,?)" in query
+    assert params[0] == "es-ES" and sorted(params[1:]) == sorted([translation.tm_key("short"), translation.tm_key(long_text)])
+    saved = {row[4]: row for row in conn.cursor_.saved}                        # (key, lang, text, key, source, lang, text, model)
+    assert set(saved) == {"short", long_text}
+    assert saved[long_text][:4] == (translation.tm_key(long_text), "es-ES", long_text.upper(), translation.tm_key(long_text))
+
+
+def test_output_with_a_character_the_model_cannot_write_is_dropped(translation, monkeypatch):
+    # NLLB lacks some CJK characters and writes <unk>; decoding deleted it, leaving "" or a word with a hole.
+    rules = {"Candle": "<unk>", "Crab claws": "<unk> 爪", "Open": "打开"}
+    use_model(translation, monkeypatch, lambda s: rules[s])
+
+    translations, _, _ = translation.translate_local(["Candle", "Crab claws", "Open"], "zh-CN")
+
+    assert translations == ["", "", "打开"]
+
+
+def test_untranslatable_strings_stay_empty_are_not_saved_and_are_reported(translation, monkeypatch, tmp_path, capsys):
+    use_model(translation, monkeypatch, lambda s: {"crab": "<unk>", "Open": "打开"}[s])
+    conn = RecordingConn()
+    path = xlf_with(tmp_path, ["crab", "Open"])
+
+    asyncio.run(translation.process_xlf_file(str(path), "zh-CN", conn, None))
+
+    assert targets(path) == [None, "打开"]                    # Phase 3 keeps the English for an empty target
+    assert [row[4] for row in conn.cursor_.saved] == ["Open"]
+    assert "1 string(s) kept in English" in capsys.readouterr().out

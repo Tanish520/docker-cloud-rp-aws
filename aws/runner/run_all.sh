@@ -40,9 +40,12 @@ case "${RUNNER_TASK:-pipeline}" in
   *) echo "❌ Unknown RUNNER_TASK: ${RUNNER_TASK}"; exit 1 ;;
 esac
 
+# INPUT_S3: one or more space-separated s3:// .resx files to add to source-folder/ before Phase 1.
 if [ -n "$INPUT_S3" ]; then
   mkdir -p source-folder
-  aws s3 cp "$INPUT_S3" "source-folder/$(basename "$INPUT_S3")" --only-show-errors
+  for uri in $INPUT_S3; do
+    aws s3 cp "$uri" "source-folder/$(basename "$uri")" --only-show-errors
+  done
 fi
 echo "=== Phase 1: extract (run $RUN_ID) ==="
 python3 aws/phase1.py "$PIPELINE_CONFIG"

@@ -12,6 +12,7 @@ import xml.etree.ElementTree as ET
 import uuid
 import shutil
 import gc  # Used to clear Python-side objects
+import hashlib
 
 os.environ["APPLICATIONINSIGHTS_ROLE_NAME"] = "Local-Inference-Engine"
 
@@ -35,7 +36,6 @@ TOKEN_LIMIT = 1024    # most real tokens per model batch (and per string, after 
 CHUNK_SIZE = 1000     # strings per model call; the memory is saved and progress printed after each
 BEAM_SIZE = 2         # 2.2x faster than 5 for -0.45 chrF on KDE4 (BATCHING_RESULTS.md section 8)
 ENGINE_WORKERS = 2    # batches translated at once, one per pinned core (PHASE2_CPUSET=0,1)
-TM_KEY_LIMIT = 434    # longest SourceText the memory's key holds (db_admin.py)
 
 LANG_TOKEN_MULTIPLIERS = {
     "zh-CN": 1.2, "ja-JP": 1.1, "ru-RU": 0.5, "hi-IN": 0.3, 
@@ -176,6 +176,10 @@ def get_sql_connection(conn_str):
         print(f"❌ SQL Connection Error: {e}")
         return None, 0
 
+def tm_key(text):
+    """Translation-memory key: SHA-256 of the source text, so strings of any length fit (db_admin.py)."""
+    return hashlib.sha256(text.encode("utf-8")).digest()
+
 def bulk_query_translations(cursor, source_texts, target_lang):
     if not source_texts: return {}, 0
     
@@ -190,8 +194,8 @@ def bulk_query_translations(cursor, source_texts, target_lang):
             chunk = unique_texts[i:i + chunk_size]
             placeholders = ','.join(['?'] * len(chunk))
             
-            query = f"SELECT SourceText, TranslatedText FROM Translations WHERE TargetLang=? AND SourceText IN ({placeholders})"
-            params = [target_lang] + chunk
+            query = f"SELECT SourceText, TranslatedText FROM Translations WHERE TargetLang=? AND SourceHash IN ({placeholders})"
+            params = [target_lang] + [tm_key(text) for text in chunk]
             
             cursor.execute(query, params)
             for row in cursor.fetchall():
@@ -211,11 +215,11 @@ def bulk_save_translations(cursor, translation_tuples):
         cursor.fast_executemany = True 
         query = """
         MERGE INTO Translations AS target
-        USING (SELECT ? AS SourceText, ? AS TargetLang) AS source
-        ON (target.SourceText = source.SourceText AND target.TargetLang = source.TargetLang)
+        USING (SELECT ? AS SourceHash, ? AS TargetLang) AS source
+        ON (target.SourceHash = source.SourceHash AND target.TargetLang = source.TargetLang)
         WHEN MATCHED THEN UPDATE SET TranslatedText = ?
-        WHEN NOT MATCHED THEN INSERT (SourceText, TargetLang, TranslatedText, ModelName, LastUpdated)
-        VALUES (?, ?, ?, ?, GETDATE());
+        WHEN NOT MATCHED THEN INSERT (SourceHash, SourceText, TargetLang, TranslatedText, ModelName, LastUpdated)
+        VALUES (?, ?, ?, ?, ?, GETDATE());
         """
         cursor.executemany(query, translation_tuples)
         return profiler.stop_timer("sql_write_latency")
@@ -270,6 +274,12 @@ def translate_local(texts, target_lang):
                 for i, future in zip(group, futures):
                     # Drop the language token prefix from the beginning
                     target_tokens = future.result().hypotheses[0][1:]
+
+                    # <unk> = a character missing from NLLB's vocabulary (some CJK words). Decoding would
+                    # delete it and leave "" or a word with a hole, so the string is left untranslated.
+                    if "<unk>" in target_tokens:
+                        out[i] = ""
+                        continue
 
                     # CRITICAL FIX: Skip special tokens so </s> doesn't leak into the translation
                     token_ids = tokenizer.convert_tokens_to_ids(target_tokens)
@@ -380,6 +390,9 @@ async def process_xlf_file(local_path, target_lang, conn, exporter):
             except Exception: pass
 
             per_item_lat = batch_latency / len(current_batch_texts)
+            untranslated = [src for src, trans in zip(current_batch_texts, translations) if trans == ""]
+            if untranslated:
+                print(f"⚠️ {len(untranslated)} string(s) kept in English (the model has no characters for them): {untranslated[:10]}")
             for b_idx, trans in enumerate(translations):
                 if trans:
                     total_translated_chars += len(trans)
@@ -393,8 +406,8 @@ async def process_xlf_file(local_path, target_lang, conn, exporter):
                         target_node.text = trans
                     
                     src = current_batch_texts[b_idx]
-                    if len(src) <= TM_KEY_LIMIT:  # a longer key would fail the whole save
-                        db_write_batch.append((src, target_lang, trans, src, target_lang, trans, "nllb-600M-ct2"))
+                    key = tm_key(src)
+                    db_write_batch.append((key, target_lang, trans, key, src, target_lang, trans, "nllb-600M-ct2"))
                     
                     multiplier = LANG_TOKEN_MULTIPLIERS.get(target_lang, 0.5)
                     output_tokens = len(trans) / (4.0 * multiplier)

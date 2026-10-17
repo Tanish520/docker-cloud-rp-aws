@@ -351,8 +351,65 @@ RUNNER_TASK=batching-bench RUNNER_TIMEOUT_SECONDS=10800 \
    - 4 strings (1 Japanese, 3 Chinese) came back **empty** from the model. Phase 3 then keeps the English text, so nothing is missing, but those 4 are untranslated.
    - 3 strings over 434 characters were translated but not stored in the translation memory.
 
+**Complete telemetry** (one `RESEARCH_DATA` record per language file, exported to CSV):
+
+Run totals:
+
+| Metric | Value |
+|---|---|
+| Translations | 120,648 (12 of 12 files; 0 engine errors, retries or throttling) |
+| Phase 2 time | 214.4 min; model 213.6 min (99.6%) |
+| Database + S3 time | 46.7 s (0.36%): memory reads/saves 43.6 s, commits 0.4 s, S3 download 1.5 s, upload 1.2 s |
+| XML | read 0.25 s, write 0.77 s |
+| Telemetry overhead | 67 ms |
+| Model calls | 11 per language (1,000-string chunks; the last has 54 strings); 63–70 model batches per language, 782 in total, including the placeholder fallback pass |
+| Memory hits | 0 (memory emptied first) |
+| Peak memory | 1.89 GB |
+| Cost | about $0.40 of m5.large time. `serverless_cost_gb_sec` (22,685 in total) is the Azure-era memory × time estimate, not money |
+
+Time per language:
+
+| Lang | Total (min) | Model (min) | Memory read+save (s) | Commit (ms) | S3 down / up (ms) | XML read / write (ms) |
+|---|---:|---:|---:|---:|---:|---:|
+| ar | 18.28 | 18.24 | 2.27 | 34 | 80 / 114 | 22 / 63 |
+| bn | 18.38 | 18.33 | 2.25 | 30 | 115 / 107 | 20 / 63 |
+| de | 17.83 | 17.78 | 2.70 | 36 | 106 / 107 | 21 / 63 |
+| es | 17.62 | 17.55 | 3.99 | 37 | 128 / 99 | 20 / 63 |
+| fr | 19.00 | 18.94 | 3.65 | 27 | 91 / 102 | 21 / 64 |
+| hi | 16.12 | 16.05 | 3.76 | 50 | 166 / 107 | 20 / 65 |
+| ja | 16.18 | 16.11 | 4.06 | 31 | 135 / 98 | 20 / 64 |
+| mr | 17.02 | 16.95 | 3.90 | 28 | 114 / 104 | 21 / 65 |
+| pa | 19.30 | 19.22 | 4.60 | 41 | 111 / 103 | 21 / 65 |
+| ta | 18.77 | 18.69 | 4.30 | 30 | 157 / 98 | 22 / 66 |
+| te | 19.15 | 19.08 | 4.12 | 32 | 105 / 101 | 21 / 66 |
+| zh | 16.73 | 16.66 | 4.05 | 32 | 143 / 106 | 21 / 64 |
+
+Text and token estimates (source: average 14.4 characters per string, about 36,287 estimated input tokens per language):
+
+| Lang | Output/input length | Characters per token | Est. output tokens | Est. ms per token |
+|---|---:|---:|---:|---:|
+| ar | 0.94 | 2.32 | 85,009 | 9.0 |
+| bn | 1.03 | 1.83 | 125,011 | 6.8 |
+| de | 1.16 | 3.53 | 52,560 | 12.0 |
+| es | 1.30 | 3.76 | 52,432 | 11.9 |
+| fr | 1.31 | 3.76 | 52,841 | 12.8 |
+| hi | 0.98 | 1.86 | 118,675 | 6.2 |
+| ja | 0.53 | 4.13 | 17,466 | 18.0 |
+| mr | 0.96 | 1.87 | 115,921 | 6.7 |
+| pa | 0.94 | 1.88 | 113,216 | 7.7 |
+| ta | 1.15 | 1.27 | 208,439 | 4.6 |
+| te | 1.07 | 1.30 | 194,528 | 5.0 |
+| zh | 0.36 | 4.18 | 10,868 | 21.2 |
+
+**Reading the telemetry columns:**
+- **Token columns are estimates.** They come from character counts × fixed per-language factors, not the model's real tokens. Time and translations/hour are exact.
+- **`cpu_usage_pct`** is one psutil sample at the end of each file. EC2 CloudWatch averaged 92–100% during translation.
+- **Old Azure-era names:** `hf_api_wait_ms` = model time; `azure_sql_*` = the RDS database (the query column also includes memory saves); `blob_*` = S3.
+- **`total_sleep_time_ms` = 0:** the 2-second pause after each file is not counted in that file's row.
+
 **Raw data:**
 - Output: `s3://<data-bucket>/runs/ec2-20261016t214343z/output/<lang>/kde4.resx`.
+- Telemetry CSV and scores: `s3://<data-bucket>/runs/ec2-20261016t214343z/results/{telemetry.csv,scores.json}`.
 - Telemetry: CloudWatch `/cloud-loc/ec2-runner`, exported with `tools/export_telemetry.py`.
 - Scores: `tools/kde4.py score`.
 

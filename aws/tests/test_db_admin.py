@@ -38,12 +38,12 @@ def test_init_creates_database_on_master_then_table(db_admin):
     assert first_sql == "IF DB_ID(N'localization') IS NULL CREATE DATABASE [localization];"
     assert "DATABASE=localization;" in second_conn and second_auto is True
     assert "CREATE TABLE dbo.Translations" in second_sql
-    assert "PRIMARY KEY (SourceText, TargetLang)" in second_sql
+    assert "PRIMARY KEY (SourceHash, TargetLang)" in second_sql
     assert "IF OBJECT_ID(N'dbo.Translations', N'U') IS NULL" in second_sql
 
 
 def test_table_has_every_column_the_merge_writes(db_admin):
-    for column in ("SourceText", "TargetLang", "TranslatedText", "ModelName", "LastUpdated"):
+    for column in ("SourceHash", "SourceText", "TargetLang", "TranslatedText", "ModelName", "LastUpdated"):
         assert column in db_admin.CREATE_TABLE_SQL
 
 
@@ -67,8 +67,15 @@ def test_cli_usage(db_admin):
     assert db_admin.main(["db_admin.py", "drop"]) == 2
 
 
-def test_primary_key_fits_sql_servers_900_byte_clustered_key_limit(db_admin):
-    # A wider key is created with only a warning; inserts of long strings then fail and the TM silently stops filling.
-    import re
-    widths = dict(re.findall(r"(SourceText|TargetLang)\s+NVARCHAR\((\d+)\)", db_admin.CREATE_TABLE_SQL))
-    assert 2 * (int(widths["SourceText"]) + int(widths["TargetLang"])) <= 900
+def test_key_is_a_fixed_size_hash_so_any_text_length_fits(db_admin):
+    # The text itself was the key, and SQL Server keys hold at most 900 bytes (434 characters);
+    # KDE4 has strings up to 660 characters. The key is now a 32-byte SHA-256 of the text.
+    assert "SourceHash     BINARY(32)    NOT NULL" in db_admin.CREATE_TABLE_SQL
+    assert "SourceText     NVARCHAR(MAX) NOT NULL" in db_admin.CREATE_TABLE_SQL
+
+
+def test_init_replaces_a_table_from_the_old_text_keyed_layout(db_admin):
+    # The memory is a cache, so an old-layout table is dropped and recreated rather than migrated.
+    sql = db_admin.CREATE_TABLE_SQL
+    assert "COL_LENGTH(N'dbo.Translations', N'SourceHash') IS NULL" in sql
+    assert sql.index("DROP TABLE dbo.Translations") < sql.index("CREATE TABLE dbo.Translations")

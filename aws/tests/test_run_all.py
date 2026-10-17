@@ -103,3 +103,10 @@ def test_input_file_is_fetched_into_the_source_folder_before_phase_1(run_all, tm
     assert calls[0] == "aws s3 cp s3://bucket/datasets/kde4/kde4.resx source-folder/kde4.resx --only-show-errors"
     assert calls[1].startswith("phase1 ")
     assert (tmp_path / "src" / "source-folder" / "kde4.resx").exists()
+
+
+def test_several_input_files_can_be_fetched(run_all):
+    result, calls = run_all(INPUT_S3="s3://bucket/check/a.resx s3://bucket/check/b.resx")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert calls[:2] == ["aws s3 cp s3://bucket/check/a.resx source-folder/a.resx --only-show-errors",
+                         "aws s3 cp s3://bucket/check/b.resx source-folder/b.resx --only-show-errors"]
