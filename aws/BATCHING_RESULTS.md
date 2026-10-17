@@ -286,3 +286,82 @@ RUNNER_TASK=batching-bench RUNNER_TIMEOUT_SECONDS=10800 \
   BENCH_ARGS="--kde4 s3://<data-bucket>/datasets/kde4/Dataset-Translated.xlsx --kde4-placeholders" \
   bash aws/infra/run_on_ec2.sh
 ```
+
+## 11. Full KDE4 pipeline run with the optimized settings — `ec2-20261016t214343z` (2026-10-16/17)
+
+**Why:** sections 8–10 measured each improvement in the benchmark, on samples of up to 1,000 strings, timing the model only. This run puts them all into the **real pipeline** (Phase 1 → 2 → 3, translation memory, S3, telemetry) and translates the **whole KDE4 dataset**.
+
+**Flaws in the production translator before this run:**
+- It translated **one batch at a time**, about 52 strings in each, in the order the strings appeared in the file, so one core sat partly idle (59% CPU).
+- It used **beam 5**.
+- It had **no output length cap**.
+- It had **no Punjabi** entry.
+- A string longer than 434 characters made the whole translation-memory save for its batch fail.
+
+**What changed** (commits `bce8a39`, `8ae49dd`):
+
+| Setting | Before | Now | Evidence |
+|---|---|---|---|
+| Order | file order | each file sorted shortest-first, then cut into 1,000-string chunks | section 4 |
+| Batches | ~52 strings, estimated tokens, one at a time | ≤1,024 real tokens, every batch of a chunk queued at once on 2 engine workers (`inter_threads=2, intra_threads=1`) | section 9 |
+| Output cap | none | 2 × longest input + 10 tokens per batch | section 9 |
+| Beam | 5 | **2** | section 8 |
+| Placeholders | sent as-is | `[0]` markers + unmasked fallback | section 10 |
+| Languages | no Punjabi | `pa-IN` → `pan_Guru` | — |
+| Memory keys > 434 chars | whole save failed | that string is translated but not saved | — |
+
+**Run:** all **10,054** usable KDE4 strings × **12 languages = 120,648 translations**. Same m5.large (2 vCPU, 8 GB), 2 pinned cores, translation memory emptied first (0 memory hits, so every string went through the model). Input built with `tools/kde4.py resx`; output scored with `tools/kde4.py score`.
+
+**Result: the run succeeded.** 12 of 12 files, 0 failures, 0 strings missing.
+
+| Lang | Time (min) | Translations/hour | chrF | Placeholders kept |
+|---|---:|---:|---:|---:|
+| ar | 18.28 | 32,991 | 55.42 | 99.72% |
+| bn | 18.38 | 32,828 | 64.38 | 100% |
+| de | 17.83 | 33,841 | 64.22 | 99.44% |
+| es | 17.62 | 34,232 | 71.50 | 100% |
+| fr | 19.00 | 31,742 | 68.89 | 99.72% |
+| hi | 16.12 | 37,429 | 64.75 | 100% |
+| ja | 16.18 | 37,282 | 50.92 | 100% |
+| mr | 17.02 | 35,434 | 58.45 | 100% |
+| pa | 19.30 | 31,258 | 61.53 | 100% |
+| ta | 18.77 | 32,144 | 64.10 | 100% |
+| te | 19.15 | 31,502 | 65.28 | 100% |
+| zh | 16.73 | 36,059 | 39.84 | 99.72% |
+| **All** | **214.4 (3 h 34 min)** | **33,760** | **63.29** | **99.88%** |
+
+- **Whole run:** 3 h 38 min from start to finish, including model restore, Phase 1 and Phase 3.
+- **Where the time goes:** the model takes 99.6% of Phase 2 time. Translation-memory reads and writes took about 45 s in total, and XML and S3 a few seconds.
+- **CPU:** EC2 CloudWatch showed 92–100% CPU during translation; it was 59% with the old one-batch-at-a-time engine.
+  - The `cpu_usage_pct` column in the telemetry (57–76%) is a single psutil sample taken at the end of each file, not an average.
+- **Memory:** 1.6–1.9 GB per file.
+
+**What it shows:**
+1. **Speed.**
+   - The old settings (beam 5, one batch at a time) ran at 13,631 translations/hour in the section 8 benchmark. At that rate this dataset would take about **8.9 hours** of translation.
+   - With the new settings the real pipeline did it in **3.6 hours**, about **2.5× faster**.
+   - The 8.9 h is an estimate from the benchmark rate, not a measured run.
+   - The benchmarks predicted about 2.8×. The real pipeline also tokenizes, protects placeholders, writes XML and saves to the database, and each 1,000-string chunk ends with a short tail where only one batch is left for the two cores.
+2. **Placeholders: 99.88% kept on the full dataset**, the same as the section 10 test. 5 of the 4,260 placeholder translations are broken, against about 12% before protection.
+3. **Quality: chrF 63.29 over all 120,648 translations.**
+   - Section 8 gave 63.96 (beam 2) and 64.41 (beam 5), but on a 1,000-string sample, so the numbers are close but not directly comparable.
+   - Japanese (50.9) and Chinese (39.8) score lowest, as in every earlier test.
+   - The same caveat applies: the references look machine-made (section 8).
+4. **Small issues found:**
+   - 4 strings (1 Japanese, 3 Chinese) came back **empty** from the model. Phase 3 then keeps the English text, so nothing is missing, but those 4 are untranslated.
+   - 3 strings over 434 characters were translated but not stored in the translation memory.
+
+**Raw data:**
+- Output: `s3://<data-bucket>/runs/ec2-20261016t214343z/output/<lang>/kde4.resx`.
+- Telemetry: CloudWatch `/cloud-loc/ec2-runner`, exported with `tools/export_telemetry.py`.
+- Scores: `tools/kde4.py score`.
+
+**To repeat:**
+```bash
+python aws/tools/kde4.py resx Dataset-Translated.xlsx kde4.resx
+aws s3 cp kde4.resx s3://<data-bucket>/datasets/kde4/kde4.resx
+RUNNER_TIMEOUT_SECONDS=21600 PIPELINE_CONFIG=aws/config.kde4.json \
+  INPUT_S3=s3://<data-bucket>/datasets/kde4/kde4.resx bash aws/infra/run_on_ec2.sh
+aws s3 cp s3://<data-bucket>/runs/<run-id>/output/ output/ --recursive
+python aws/tools/kde4.py score Dataset-Translated.xlsx output/ --out scores.json
+```
