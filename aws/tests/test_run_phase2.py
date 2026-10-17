@@ -130,3 +130,9 @@ def test_memory_is_kept_unless_a_reset_is_asked_for(run_phase2):
     _, emptied = run_phase2(RESET_TM="true")
     assert not any("db_admin.py reset" in c for c in kept)
     assert any("db_admin.py reset" in c for c in emptied)
+
+
+def test_twin_setting_reaches_the_translator(run_phase2):
+    result, calls = run_phase2(TM_TWINS="off")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "-e TM_TWINS" in translation_call(calls)

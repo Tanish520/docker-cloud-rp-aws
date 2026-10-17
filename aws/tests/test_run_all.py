@@ -22,7 +22,7 @@ with open(os.environ["STUB_LOG"], "a") as log:
 sys.exit(int(os.environ.get("STUB_{upper}_EXIT", "0")))
 """
 PHASE2_SH = """#!/bin/bash
-echo "phase2 RUN_ID=$RUN_ID MODEL_KEY=$MODEL_KEY DB_USER=$DB_USER DB_PASSWORD=$DB_PASSWORD RESET_TM=$RESET_TM CPUSET=$PHASE2_CPUSET REGION=$AWS_DEFAULT_REGION CONFIG=$PIPELINE_CONFIG TASK=${PHASE2_TASK:-}" >> "$STUB_LOG"
+echo "phase2 RUN_ID=$RUN_ID TWINS=${TM_TWINS:-on} MODEL_KEY=$MODEL_KEY DB_USER=$DB_USER DB_PASSWORD=$DB_PASSWORD RESET_TM=$RESET_TM CPUSET=$PHASE2_CPUSET REGION=$AWS_DEFAULT_REGION CONFIG=$PIPELINE_CONFIG TASK=${PHASE2_TASK:-}" >> "$STUB_LOG"
 """
 
 
@@ -123,6 +123,7 @@ def test_memory_experiment_runs_each_version_in_order_on_one_machine(run_all, tm
                        for f in ("v1", "v2-r1", "v4-r1")]
     phase2 = [c for c in calls if c.startswith("phase2")]
     assert [c.split()[1] for c in phase2] == ["RUN_ID=ec2-test-v1", "RUN_ID=ec2-test-v2-r1", "RUN_ID=ec2-test-v4-cold"]
+    assert [c.split()[2] for c in phase2] == ["TWINS=on", "TWINS=on", "TWINS=on"]
     assert ["RESET_TM=true" in c for c in phase2] == [True, False, True]
     assert all("CONFIG=aws/config.kde4tm.json" in c for c in phase2)
     assert [c for c in calls if c.startswith("phase3")] == [f"phase3 aws/config.kde4tm.json RUN_ID=ec2-test-{n}" for n in ("v1", "v2-r1", "v4-cold")]
@@ -133,3 +134,12 @@ def test_memory_experiment_runs_each_version_in_order_on_one_machine(run_all, tm
     assert [line.split("\t")[:4] for line in lines[1:]] == [["v1", "ec2-test-v1", "v1", "true"],
                                                              ["v2-r1", "ec2-test-v2-r1", "v2-r1", "false"],
                                                              ["v4-cold", "ec2-test-v4-cold", "v4-r1", "true"]]
+
+
+def test_a_plain_step_runs_without_twin_reuse(run_all):
+    result, calls = run_all(RUNNER_TASK="tm-experiment", TM_STEPS="v1:reset v4-cold=v4-r1:reset:plain",
+                            TM_INPUT_PREFIX="s3://bucket/tm")
+    assert result.returncode == 0, result.stdout + result.stderr
+    phase2 = [c for c in calls if c.startswith("phase2")]
+    assert [c.split()[1:3] for c in phase2] == [["RUN_ID=ec2-test-v1", "TWINS=on"], ["RUN_ID=ec2-test-v4-cold", "TWINS=off"]]
+    assert "RESET_TM=true" in phase2[1]

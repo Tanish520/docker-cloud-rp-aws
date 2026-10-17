@@ -24,7 +24,7 @@ MODEL_DIR="$TRANSLATOR_DIR/nllb_ct2"
 # -e NAME passes the host value through. The container reaches S3 with the build's IAM role
 # via the CodeBuild credentials endpoint (AWS_CONTAINER_CREDENTIALS_RELATIVE_URI).
 DOCKER_ENV=(-e RUN_ID -e BUCKET -e DB_HOST -e DB_USER -e DB_PASSWORD -e DB_NAME
-            -e AWS_REGION -e AWS_DEFAULT_REGION -e AWS_CONTAINER_CREDENTIALS_RELATIVE_URI)
+            -e AWS_REGION -e AWS_DEFAULT_REGION -e AWS_CONTAINER_CREDENTIALS_RELATIVE_URI -e TM_TWINS)
 
 run_in_image() {
   docker run --rm "${DOCKER_ENV[@]}" -v "$TRANSLATOR_DIR:/app" "$IMAGE" "$@"

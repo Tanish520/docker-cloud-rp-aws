@@ -39,7 +39,8 @@ case "${RUNNER_TASK:-pipeline}" in
     exit 0 ;;
   tm-experiment)
     # Translation-memory experiment: several app versions on one machine, memory kept between steps.
-    # TM_STEPS: space-separated "name[=file][:reset]", e.g. "v1:reset v2-r1 v4-cold=v4-r1:reset";
+    # TM_STEPS: space-separated "name[=file][:reset][:plain]", e.g. "v1:reset v2-r1 v4-cold=v4-r1:reset:plain"
+    # (reset empties the memory first; plain also switches near-twin reuse off, i.e. the pipeline before it);
     # step "name" translates $TM_INPUT_PREFIX/kde4tm-<file>.resx as run $RUN_ID-<name>.
     : "${TM_STEPS:?TM_STEPS must be set}"
     : "${TM_INPUT_PREFIX:?TM_INPUT_PREFIX must be set}"
@@ -52,12 +53,14 @@ case "${RUNNER_TASK:-pipeline}" in
     mkdir -p source-folder
     for step in $TM_STEPS; do
       reset=false
+      twins=on
       spec="$step"
+      case "$spec" in *:plain) twins=off; spec="${spec%:plain}" ;; esac
       case "$spec" in *:reset) reset=true; spec="${spec%:reset}" ;; esac
       name="${spec%%=*}"
       file="${spec#*=}"
-      export RUN_ID="$base_run-$name" RESET_TM="$reset"
-      echo "=== Memory experiment step $name (file $file, reset $reset, run $RUN_ID) ==="
+      export RUN_ID="$base_run-$name" RESET_TM="$reset" TM_TWINS="$twins"
+      echo "=== Memory experiment step $name (file $file, reset $reset, twins $twins, run $RUN_ID) ==="
       aws s3 cp "$TM_INPUT_PREFIX/kde4tm-$file.resx" source-folder/kde4tm.resx --only-show-errors
       t0="$(now)"; python3 aws/phase1.py "$PIPELINE_CONFIG"
       t1="$(now)"; bash aws/scripts/run_phase2.sh
