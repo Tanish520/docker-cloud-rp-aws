@@ -498,3 +498,129 @@ RUNNER_TIMEOUT_SECONDS=3600 PIPELINE_CONFIG=aws/config.kde4-check.json \
   INPUT_S3="s3://<data-bucket>/datasets/kde4/kde4-check-a.resx s3://<data-bucket>/datasets/kde4/kde4-check-b.resx" \
   bash aws/infra/run_on_ec2.sh
 ```
+
+## 13. Translation memory: keep, label, load once, reuse near-twins — experiment `ec2-20261017t175415z` (2026-10-17/18)
+
+Semester task (Track 3, weeks 3–4): *"Build/update Translation Memory (TM) to reduce lookups"*. Phase 3 asks for *"token usage reduction, lookup speedups and cost savings"*.
+
+### 13.1 Flaws before
+
+1. **The memory was emptied before every run** (`RESET_TM=true` by default). In CI/CD every commit retranslated the whole app, although a commit changes only a few strings.
+2. **No engine check.** Each entry recorded a model name, but lookups ignored it. After a change of model or settings, older translations would still be reused.
+3. **Lookups: one database query per 1,000 strings per file**, and every file asked again.
+4. **Exact match only.** "8 Cards" could not reuse "20 Cards", and "Border:" could not reuse "Border". 526 of the 10,054 KDE4 strings (5.2%) have such a near-twin.
+5. **A 2 s pause after every file** (24 s per 12-language run) that only waited for Azure's log exporter.
+
+### 13.2 What changed
+
+| Fix | Change | Code |
+|---|---|---|
+| 1 | Memory kept between runs (`RESET_TM=false` default). Each entry records `EngineVersion` = model + beam + length cap + placeholder style + `<unk>` rule, and lookups match it. Key is `(TargetLang, EngineVersion, SourceHash)`. | `db_admin.py`, `translation.py` `engine_version()` |
+| 3 | Each language's memory is loaded **once per run in one query** into a dictionary. Strings translated during the run are added as they are saved, so later files reuse them with no query. | `translation.py` `load_memory()`, `remember()` |
+| 2 | **Near-twin reuse** (`templates.py`): a saved *model* translation is adapted to a string that differs only in numbers, placeholders or trailing punctuation (values swapped, punctuation in the target language's style). Twins inside one file go to the model once. Refused whenever the values cannot be put back cleanly. `TM_TWINS=off` disables it. | `templates.py`, `translation.py` |
+| — | The pause runs only when an Azure exporter is connected. | `translation.py` |
+| — | Telemetry: `tm_db_queries`, `tm_lookup_ms`, `tm_hits_in_run`, `tm_twin_hits`, `model_strings`, `real_input_tokens`, `real_output_tokens`, `padding_pct`. | `translation.py`, `export_telemetry.py` |
+
+Not built: skipping unchanged files. A file served entirely from the memory already takes about 0.1 s (section 12.3), so a skip would save almost nothing.
+
+### 13.3 Near-twin quality check (before turning it on)
+
+**Test:** all 440 twin groups in the full KDE4 set (968 strings, 528 reusable pairs) × 12 languages, run locally with the production model and settings. For each pair, the adapted translation was compared with a fresh model translation of the same string, both scored against the references.
+
+**First version:** punctuation style was guessed, using full-width `：` for Japanese. Japanese came out at 49.00 reused against 50.62 fresh.
+
+**Fix:** counting how every KDE4 reference ends showed:
+- only Chinese uses `：` (Japanese uses `:` 749 times against `：` 657);
+- `...` is kept everywhere;
+- Marathi keeps `.`.
+
+`TAIL_STYLE` now follows those counts.
+
+| Lang | Reused | Refused | chrF fresh | chrF reused | Identical |
+|---|---:|---:|---:|---:|---:|
+| hi | 506 | 22 | 67.12 | 70.62 | 48% |
+| ar | 488 | 40 | 55.51 | 56.08 | 73% |
+| bn | 454 | 74 | 64.10 | 65.34 | 26% |
+| de | 526 | 2 | 66.12 | 66.83 | 69% |
+| es | 527 | 1 | 66.82 | 68.04 | 71% |
+| fr | 510 | 18 | 67.54 | 68.74 | 65% |
+| ja (style fixed) | 525 | 3 | 50.62 | **51.14** | 67% |
+| mr (style fixed) | 492 | 36 | 57.62 | 59.55 | 67% |
+| pa | 527 | 1 | 60.24 | 62.60 | 32% |
+| ta | 526 | 2 | 66.62 | 68.28 | 32% |
+| te | 526 | 2 | 66.98 | 70.50 | 32% |
+| zh (style fixed) | 477 | 51 | 33.78 | **43.82** | 46% |
+| **All (first version)** | **6,084** | | **63.43** | **65.13** | 50% |
+
+
+- **Placeholders kept: 100%** in every language, reused and fresh.
+- **Refusals** are mostly the model writing numbers in local digits (Bengali, Arabic, Marathi). Those strings go to the model as before.
+- **Decision:** near-twin reuse is **on** by default.
+
+### 13.4 The experiment: app versions like CI/CD commits
+
+**Design:**
+- v1 = 2,000 random KDE4 strings (seed 2026).
+- v2 / v3 / v4 = v1 + 20 / 100 / 200 **new** strings (1% / 5% / 10%), **3 repeats** each. Every new string is used in no other version, so a kept memory has never seen it.
+- 12 languages. One m5.large ran all steps in a row (`RUNNER_TASK=tm-experiment`), keeping the memory between them.
+- The last step reran v4 with the memory emptied **and** twin reuse off: the pipeline before this work (the "without the fixes" baseline).
+- A smaller set was chosen to finish faster. The savings are percentages, so they do not depend on app size, and the full-size speed is known from section 11.
+
+**Measured per step** (telemetry summed over the 12 language files; "work" = translating the files; "step" = the whole step including about 29 s of fixed start-up: image build check, model download and load):
+
+| Step | Strings × langs | Exact hits | Twin hits | Sent to model | Work (s) | Step (s) | Real tokens in + out | DB queries | Lookup (ms) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| v1 (empty memory) | 24,000 | 0 | 365 | 23,650 | 2,492.7 | 2,578.9 | 261,431 | 12 | 43.8 |
+| v2-r1 | 24,240 | 23,883 | 0 | 357 | 54.6 | 93.4 | 3,972 | 12 | 223.4 |
+| v3-r1 | 25,200 | 23,883 | 59 | 1,261 | 155.5 | 186.9 | 13,706 | 12 | 271.7 |
+| v4-r1 | 26,400 | 23,883 | 71 | 2,446 | 287.5 | 319.4 | 26,468 | 12 | 224.7 |
+| v2-r2 | 24,240 | 23,883 | 12 | 345 | 55.6 | 86.9 | 4,051 | 12 | 229.6 |
+| v3-r2 | 25,200 | 23,883 | 33 | 1,284 | 168.0 | 199.4 | 13,957 | 12 | 237.1 |
+| v4-r2 | 26,400 | 23,883 | 81 | 2,436 | 316.7 | 348.4 | 27,646 | 12 | 253.5 |
+| v2-r3 | 24,240 | 23,883 | 0 | 357 | 96.4 | 127.8 | 4,816 | 12 | 262.9 |
+| v3-r3 | 25,200 | 23,883 | 12 | 1,305 | 152.6 | 184.0 | 13,664 | 12 | 254.6 |
+| v4-r3 | 26,400 | 23,883 | 59 | 2,458 | 295.0 | 327.3 | 27,746 | 12 | 261.9 |
+| **v4 without the fixes** | 26,400 | 0 | 0 | 26,415 | 2,761.1 | 2,794.2 | 290,622 | 12 | 46.4 |
+
+0 failures in all 132 files.
+
+**Savings** (average of the 3 repeats against a run without the fixes):
+- v4: measured.
+- v2 and v3: from the measured rate of the v4 baseline, 0.1046 s of work per string-language. v1 ran at 0.1039, which confirms that time grows in a straight line with strings when nothing is reused.
+- Cost: m5.large on-demand $0.101/h (AWS price list, ap-south-1).
+
+| Change | Without the fixes: step | With: step (avg) | **Speed-up** | Model tokens without → with | **Token reduction** | Cost per run without → with |
+|---|---:|---:|---:|---:|---:|---:|
+| v2: +1% | ≈2,568 s | 102.7 s | **25×** | ≈266,844 → 4,280 | **98.4%** | $0.072 → $0.0029 |
+| v3: +5% | ≈2,669 s | 190.1 s | **14×** | ≈277,412 → 13,776 | **95.0%** | $0.075 → $0.0053 |
+| v4: +10% | 2,794 s (measured) | 331.7 s | **8.4×** | 290,622 → 27,287 | **90.6%** | $0.078 → $0.0093 |
+
+- **Translation work alone** (without the fixed ~30 s start-up): 37× (v2), 17× (v3), 9.2× (v4).
+- **Quality** (`tools/kde4.py score --version`): v4 served from the memory chrF **63.38**, v4 without the fixes **63.37**, v1 **63.38**; placeholders 100% in all, 0 missing.
+
+**Lookups:**
+- **12 database queries per step**, one per language. The old per-file, 1,000-string queries would need 36 for these 2,020–2,200-string files (3 per language), and one more per extra file.
+- Loading about 2,000 entries per language took 224–272 ms in total for all 12 languages. Each check after that is a dictionary lookup inside the program.
+
+**Near-twins:**
+- On the first release, 365 of 24,000 (1.5%) were reused instead of translated. That is fewer than the 5.2% in the full set, because twins become rarer in a 2,000-string sample.
+- In later steps, 12–81 per step.
+
+**Finding: strings kept in English are retried on every run.**
+- Every step after v1 had 117 exact misses among the unchanged strings (23,883 hits of 24,000). These are the `<unk>` strings (section 12.2) that are deliberately not saved.
+- They are sent to the model again each time, although with the same engine version the result cannot change. That is **33% of v2's model work** (117 of 357 strings).
+- Remembering them per engine version would remove this.
+
+**Raw data:**
+- `s3://<data-bucket>/runs/ec2-20261017t175415z/experiment/steps.tsv` (step timings);
+- runs `ec2-20261017t175415z-<step>` (output, telemetry in CloudWatch `/cloud-loc/ec2-runner`);
+- twin and `<unk>` analyses in `s3://<data-bucket>/analysis/twin-quality/`.
+
+**To repeat:**
+```bash
+python aws/tools/kde4.py versions Dataset-Translated.xlsx tm/
+aws s3 cp tm/ s3://<data-bucket>/datasets/kde4/tm/ --recursive
+RUNNER_TASK=tm-experiment RUNNER_TIMEOUT_SECONDS=14400 TM_INPUT_PREFIX=s3://<data-bucket>/datasets/kde4/tm \
+  TM_STEPS="v1:reset v2-r1 v3-r1 v4-r1 v2-r2 v3-r2 v4-r2 v2-r3 v3-r3 v4-r3 v4-cold=v4-r1:reset:plain" \
+  bash aws/infra/run_on_ec2.sh
+```
