@@ -21,7 +21,8 @@ AWS_TRANSLATION = AWS_TRANSLATOR / "translation.py"
 AZURE_ONLY_IMPORTS = {"from azure.storage.blob import BlobServiceClient"}
 AWS_ONLY_IMPORTS = {"import aws_runtime", "from s3_store import RunStore",
                     "from placeholders import protect, restore",
-                    "from batching import decoding_cap, plan_token_batches", "import hashlib"}
+                    "from batching import decoding_cap, plan_token_batches", "import hashlib",
+                    "from templates import adapt, template_of"}
 
 
 def _dumps(statements):
@@ -36,7 +37,8 @@ def test_translation_shared_code_is_identical():
     exclude = ("main", "translate_local", "process_xlf_file", "translator", "BATCH_SIZE", "TOKEN_LIMIT",
                "CHUNK_SIZE", "BEAM_SIZE", "ENGINE_WORKERS", "LANG_TOKEN_MULTIPLIERS",
                "tm_key", "engine_version", "bulk_query_translations", "bulk_save_translations",
-               "memory", "added_in_run", "file_extra", "reset_file_extra", "load_memory")
+               "memory", "added_in_run", "file_extra", "reset_file_extra", "load_memory",
+               "twins", "remember", "MODEL_NAME", "TWIN_REUSE")
     assert shared_top_level(AWS_TRANSLATION, exclude) == shared_top_level(AZ_TRANSLATION, exclude)
 
 

@@ -450,7 +450,7 @@ def test_engine_version_names_the_model_and_every_setting_that_changes_output(tr
 
 def test_a_language_s_memory_is_loaded_once_per_run(translation, monkeypatch, tmp_path):
     model = use_model(translation, monkeypatch, lambda s: s.upper())
-    conn = RecordingConn(memory_rows=[(translation.tm_key("Open"), "Öffnen")])
+    conn = RecordingConn(memory_rows=[(translation.tm_key("Open"), "Open", "Öffnen", "nllb-600M-ct2")])
     first = xlf_with(tmp_path, ["Open", "Close"], "a.de-DE.xlf")
     second = xlf_with(tmp_path, ["Open", "Close", "Save"], "b.de-DE.xlf")
 
@@ -458,7 +458,7 @@ def test_a_language_s_memory_is_loaded_once_per_run(translation, monkeypatch, tm
     stats, *_ = asyncio.run(translation.process_xlf_file(str(second), "de-DE", conn, None))
 
     [(query, params)] = conn.cursor_.queries                         # one database query for both files
-    assert "SELECT SourceHash, TranslatedText" in query and "TargetLang=? AND EngineVersion=?" in query
+    assert "SELECT SourceHash, SourceText, TranslatedText, ModelName" in query and "TargetLang=? AND EngineVersion=?" in query
     assert params == ["de-DE", translation.engine_version()]
     assert targets(first) == ["Öffnen", "CLOSE"]
     assert targets(second) == ["Öffnen", "CLOSE", "SAVE"]             # "Close" reused from the first file
@@ -478,3 +478,71 @@ def test_file_reports_lookup_and_real_token_counts(translation, monkeypatch, tmp
     assert extra["model_strings"] == 2
     assert extra["real_input_tokens"] == 4 and extra["real_output_tokens"] == 6     # "a x" + "b b b x"
     assert extra["padding_pct"] == 33.33                                      # one batch [1, 3]: 2 of 6 positions padded
+
+
+def german(text):
+    return {"20 Cards": "20 Karten", "8 Cards": "8 Karten (model)", "Border": "Rahmen", "Border:": "Rahmen (model):",
+            "Open": "Öffnen"}[text]
+
+
+def test_a_twin_of_a_memory_entry_is_adapted_without_the_model(translation, monkeypatch, tmp_path):
+    model = use_model(translation, monkeypatch, german)
+    conn = RecordingConn(memory_rows=[(translation.tm_key("20 Cards"), "20 Cards", "20 Karten", "nllb-600M-ct2")])
+    path = xlf_with(tmp_path, ["8 Cards", "Open"], "a.de-DE.xlf")
+
+    stats, *_ = asyncio.run(translation.process_xlf_file(str(path), "de-DE", conn, None))
+
+    assert targets(path) == ["8 Karten", "Öffnen"]
+    assert model.seen == ["Open"]
+    assert stats["extra"]["tm_twin_hits"] == 1
+    saved = {saved_source(row): row[-1] for row in conn.cursor_.saved}
+    assert saved == {"8 Cards": "nllb-600M-ct2+twin", "Open": "nllb-600M-ct2"}
+
+
+def test_twins_in_one_file_go_to_the_model_once(translation, monkeypatch, tmp_path):
+    model = use_model(translation, monkeypatch, german)
+    path = xlf_with(tmp_path, ["20 Cards", "Border", "8 Cards", "Border:"], "a.de-DE.xlf")
+
+    stats, *_ = asyncio.run(translation.process_xlf_file(str(path), "de-DE", RecordingConn(), None))
+
+    assert sorted(model.seen) == ["20 Cards", "Border"]
+    assert targets(path) == ["20 Karten", "Rahmen", "8 Karten", "Rahmen:"]
+    assert stats["extra"]["tm_twin_hits"] == 2
+
+
+def test_a_twin_that_cannot_be_adapted_goes_to_the_model(translation, monkeypatch, tmp_path):
+    model = use_model(translation, monkeypatch, lambda s: {"20 Cards": "٢٠ بطاقة", "8 Cards": "٨ بطاقات"}[s])
+    path = xlf_with(tmp_path, ["20 Cards", "8 Cards"], "a.ar-SA.xlf")
+
+    stats, *_ = asyncio.run(translation.process_xlf_file(str(path), "ar-SA", RecordingConn(), None))
+
+    assert sorted(model.seen) == ["20 Cards", "8 Cards"]
+    assert targets(path) == ["٢٠ بطاقة", "٨ بطاقات"]
+    assert stats["extra"]["tm_twin_hits"] == 0
+
+
+def test_twin_reuse_can_be_switched_off(translation, monkeypatch, tmp_path):
+    model = use_model(translation, monkeypatch, german)
+    monkeypatch.setattr(translation, "TWIN_REUSE", False)
+    path = xlf_with(tmp_path, ["20 Cards", "8 Cards"], "a.de-DE.xlf")
+
+    asyncio.run(translation.process_xlf_file(str(path), "de-DE", RecordingConn(), None))
+
+    assert sorted(model.seen) == ["20 Cards", "8 Cards"]
+
+
+def test_no_pause_between_files_without_an_azure_exporter(translation, run_env, s3, monkeypatch):
+    # The 2 s pause let Azure's log exporter flush; on AWS it only made every run 2 s per file longer.
+    put_raw(s3, "resx_file_10.es-ES.xlf")
+    put_raw(s3, "resx_file_10.fr-FR.xlf")
+    pauses = []
+
+    async def record_sleep(seconds):
+        pauses.append(seconds)
+
+    monkeypatch.setattr(translation.asyncio, "sleep", record_sleep)
+    monkeypatch.setattr(translation, "get_sql_connection", lambda conn_str: (FakeConn(), 0))
+    monkeypatch.setattr(translation, "process_xlf_file", fake_processor(translation))
+
+    assert run(translation, run_env) == 0
+    assert pauses == []

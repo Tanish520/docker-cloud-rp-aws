@@ -23,6 +23,7 @@ import aws_runtime
 from s3_store import RunStore
 from placeholders import protect, restore
 from batching import decoding_cap, plan_token_batches
+from templates import adapt, template_of
 from opencensus.ext.azure.log_exporter import AzureLogHandler
 from opencensus.ext.azure import metrics_exporter
 from opencensus.stats import aggregation as aggregation_module
@@ -32,6 +33,7 @@ from opencensus.stats import view as view_module
 from opencensus.tags import tag_map as tag_map_module
 
 # --- 1. CONFIGURATION ---
+TWIN_REUSE = os.environ.get("TM_TWINS", "on") != "off"  # reuse near-twins (templates.py); TM_TWINS=off disables
 TOKEN_LIMIT = 1024    # most real tokens per model batch (and per string, after truncation)
 CHUNK_SIZE = 1000     # strings per model call; the memory is saved and progress printed after each
 BEAM_SIZE = 2         # 2.2x faster than 5 for -0.45 chrF on KDE4 (BATCHING_RESULTS.md section 8)
@@ -176,6 +178,8 @@ def get_sql_connection(conn_str):
         print(f"❌ SQL Connection Error: {e}")
         return None, 0
 
+MODEL_NAME = "nllb-600M-ct2"
+
 def engine_version():
     """What produced a translation: the model plus every setting that changes the output. Stored with each
     memory entry and matched on lookup, so changing any of them never reuses older translations."""
@@ -189,20 +193,36 @@ def tm_key(text):
 # database in one query the first time it is needed; strings translated during the run are added as they are
 # saved, so later files reuse them without asking the database again.
 memory = {}
+twins = {}                    # target_lang -> {template_of(source): (source, translation)} of model translations
 added_in_run = set()          # (target_lang, SourceHash) of entries translated during this run
 file_extra = {}               # per-file counters reported in RESEARCH_DATA (reset by process_xlf_file)
 
 def reset_file_extra():
     file_extra.clear()
-    file_extra.update({"tm_db_queries": 0, "tm_lookup_ms": 0.0, "tm_hits_in_run": 0, "model_strings": 0,
+    file_extra.update({"tm_db_queries": 0, "tm_lookup_ms": 0.0, "tm_hits_in_run": 0, "tm_twin_hits": 0, "model_strings": 0,
                        "real_input_tokens": 0, "real_output_tokens": 0, "padded_positions": 0, "real_positions": 0})
 
 def load_memory(cursor, target_lang):
     profiler.counters["sql_reads"] += 1
     file_extra["tm_db_queries"] += 1
-    cursor.execute("SELECT SourceHash, TranslatedText FROM Translations WHERE TargetLang=? AND EngineVersion=?",
+    cursor.execute("SELECT SourceHash, SourceText, TranslatedText, ModelName FROM Translations WHERE TargetLang=? AND EngineVersion=?",
                    [target_lang, engine_version()])
-    memory[target_lang] = {bytes(row[0]): row[1] for row in cursor.fetchall()}
+    known, index = {}, twins.setdefault(target_lang, {})
+    for key, source, translation, model_name in cursor.fetchall():
+        known[bytes(key)] = translation
+        if model_name == MODEL_NAME:              # adapt only from model translations, never from adapted ones
+            index.setdefault(template_of(source), (source, translation))
+    memory[target_lang] = known
+
+def remember(target_lang, source, translation, model_made):
+    key = tm_key(source)
+    memory.setdefault(target_lang, {})[key] = translation
+    added_in_run.add((target_lang, key))
+    if model_made:
+        twins.setdefault(target_lang, {}).setdefault(template_of(source), (source, translation))
+    version = engine_version()
+    return (key, target_lang, version, translation, key, source, target_lang, version, translation,
+            MODEL_NAME if model_made else MODEL_NAME + "+twin")
 
 def bulk_query_translations(cursor, source_texts, target_lang):
     if not source_texts: return {}, 0
@@ -432,10 +452,7 @@ async def process_xlf_file(local_path, target_lang, conn, exporter):
                         target_node.text = trans
                     
                     src = current_batch_texts[b_idx]
-                    key, version = tm_key(src), engine_version()
-                    db_write_batch.append((key, target_lang, version, trans, key, src, target_lang, version, trans, "nllb-600M-ct2"))
-                    memory.setdefault(target_lang, {})[key] = trans
-                    added_in_run.add((target_lang, key))
+                    db_write_batch.append(remember(target_lang, src, trans, model_made=True))
                     
                     multiplier = LANG_TOKEN_MULTIPLIERS.get(target_lang, 0.5)
                     output_tokens = len(trans) / (4.0 * multiplier)
@@ -460,14 +477,62 @@ async def process_xlf_file(local_path, target_lang, conn, exporter):
         current_batch_indices.clear()
         current_batch_tokens = 0
 
-    # Shortest first, so each chunk holds strings of similar length and its batches need little padding.
-    missing_units.sort(key=lambda unit: len(unit[1]))
-    for start in range(0, len(missing_units), CHUNK_SIZE):
-        for original_unit_idx, source_text in missing_units[start:start + CHUNK_SIZE]:
-            current_batch_texts.append(source_text)
-            current_batch_indices.append(original_unit_idx)
-            current_batch_tokens += len(source_text) / 4.0
-        await flush_batch()
+    # Near-twins ("8 Cards" for a saved "20 Cards", "Border:" for "Border"): adapt a model translation instead
+    # of calling the model. Twins of a string still to be translated in this file wait until it is done.
+    twin_rows, later = [], []
+
+    def twin_translation(source_text):
+        saved = twins.get(target_lang, {}).get(template_of(source_text)) if TWIN_REUSE else None
+        return adapt(saved[0], saved[1], source_text, target_lang) if saved else None
+
+    def use_twin(unit_idx, source_text, translation):
+        nonlocal total_translated_chars
+        target_node = file_units[unit_idx].find('target')
+        if target_node is not None:
+            target_node.text = translation
+        total_translated_chars += len(translation)
+        file_extra["tm_twin_hits"] += 1
+        twin_rows.append(remember(target_lang, source_text, translation, model_made=False))
+
+    if TWIN_REUSE:
+        leaders, groups = [], set()
+        for unit in missing_units:
+            adapted = twin_translation(unit[1])
+            if adapted is not None:
+                use_twin(*unit, adapted)
+            elif template_of(unit[1]) in groups:
+                later.append(unit)
+            else:
+                groups.add(template_of(unit[1]))
+                leaders.append(unit)
+        missing_units = leaders
+
+    async def translate_units(units):
+        # Shortest first, so each chunk holds strings of similar length and its batches need little padding.
+        nonlocal current_batch_tokens
+        units = sorted(units, key=lambda unit: len(unit[1]))
+        for start in range(0, len(units), CHUNK_SIZE):
+            for original_unit_idx, source_text in units[start:start + CHUNK_SIZE]:
+                current_batch_texts.append(source_text)
+                current_batch_indices.append(original_unit_idx)
+                current_batch_tokens += len(source_text) / 4.0
+            await flush_batch()
+
+    await translate_units(missing_units)
+    retry = []
+    for unit in later:
+        adapted = twin_translation(unit[1])
+        if adapted is not None:
+            use_twin(*unit, adapted)
+        else:
+            retry.append(unit)
+    await translate_units(retry)
+
+    if twin_rows:
+        file_stats["total_sql_time_ms"] += bulk_save_translations(cursor, twin_rows)
+        try:
+            conn.commit()
+        except Exception as e: print(f"⚠️ SQL Commit warning: {e}")
 
     profiler.start_timer("xml_write")
     tree.write(local_path, encoding='utf-8', xml_declaration=True)
@@ -651,9 +716,10 @@ async def main(config_path):
                             az_handler.flush()
                         except Exception as e:
                             pass
-                    s_start = time.perf_counter()
-                    await asyncio.sleep(2)
-                    profiler.counters["sleep_time_ms"] += (time.perf_counter() - s_start) * 1000
+                        # Give Azure's exporter time to send; without one (AWS) the pause only slows the run.
+                        s_start = time.perf_counter()
+                        await asyncio.sleep(2)
+                        profiler.counters["sleep_time_ms"] += (time.perf_counter() - s_start) * 1000
                     succeeded = True
 
                 except Exception as loop_e:
