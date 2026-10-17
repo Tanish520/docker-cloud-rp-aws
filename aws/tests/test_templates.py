@@ -42,11 +42,23 @@ def test_trailing_punctuation_is_removed_or_added():
     assert tp.adapt("Save...", "Speichern...", "Save!", "de-DE") == "Speichern!"
 
 
-def test_trailing_punctuation_follows_the_target_language_style():
-    assert tp.adapt("Border", "边框", "Border:", "zh-CN") == "边框："
+@pytest.mark.parametrize("translation, new_source, lang, expected", [
+    # Forms the KDE4 references use most for each language (BATCHING_RESULTS.md section 13).
+    ("边框", "Border:", "zh-CN", "边框："),
+    ("枠", "Border:", "ja-JP", "枠:"),                    # Japanese references use ":" slightly more than "："
+    ("完成", "Done?", "zh-CN", "完成？"),
+    ("完了", "Done!", "ja-JP", "完了！"),
+    ("بيرون", "Exit?", "ar-SA", "بيرون؟"),
+    ("सहेजें", "Save.", "hi-IN", "सहेजें।"),
+    ("जतन करा", "Save.", "mr-IN", "जतन करा."),           # Marathi references keep "."
+    ("保存", "Save...", "zh-CN", "保存..."),              # "..." is kept in every language
+])
+def test_trailing_punctuation_follows_the_target_language_style(translation, new_source, lang, expected):
+    assert tp.adapt(new_source.rstrip(".:!?"), translation, new_source, lang) == expected
+
+
+def test_punctuation_is_removed_in_any_script():
     assert tp.adapt("Done!", "完了！", "Done", "ja-JP") == "完了"
-    assert tp.adapt("Done", "完成", "Done?", "zh-CN") == "完成？"
-    assert tp.adapt("Exit", "بيرون", "Exit?", "ar-SA") == "بيرون؟"
 
 
 def test_an_identical_string_is_returned_unchanged():

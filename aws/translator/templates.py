@@ -10,7 +10,14 @@ import re
 SLOT = re.compile(r"%\d+|%[sdif]|\{[^}]*\}|<[^>]+>|\d+")
 SOURCE_TAIL = re.compile(r"[\s.:!?…]+$")
 TRANSLATION_TAIL = re.compile(r"[\s.:!?…。：！？؟।]+$")
-FULL_WIDTH = str.maketrans({":": "：", "!": "！", "?": "？", ".": "。"})
+# Trailing punctuation the KDE4 references use most per language (counted over every row ending in it);
+# anything not listed is kept as written. "..." is kept everywhere.
+TAIL_STYLE = {
+    "zh": {":": "：", "?": "？", "!": "！", ".": "。"},
+    "ja": {"?": "？", "!": "！", ".": "。"},
+    "ar": {"?": "؟"},
+    "hi": {".": "।"}, "bn": {".": "।"}, "pa": {".": "।"},
+}
 
 
 def template_of(text):
@@ -25,14 +32,8 @@ def _tail(text):
 
 def _styled(tail, target_lang):
     """Trailing punctuation as the target language writes it."""
-    lang = target_lang.split("-")[0]
-    if lang in ("zh", "ja"):
-        return tail.replace("...", "…").translate(FULL_WIDTH)
-    if lang == "ar":
-        return tail.replace("?", "؟")
-    if lang in ("hi", "mr", "bn", "pa") and tail == ".":
-        return "।"
-    return tail
+    style = TAIL_STYLE.get(target_lang.split("-")[0], {})
+    return style.get(tail, tail)
 
 
 def _value_pattern(value):
