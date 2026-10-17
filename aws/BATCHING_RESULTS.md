@@ -422,3 +422,79 @@ RUNNER_TIMEOUT_SECONDS=21600 PIPELINE_CONFIG=aws/config.kde4.json \
 aws s3 cp s3://<data-bucket>/runs/<run-id>/output/ output/ --recursive
 python aws/tools/kde4.py score Dataset-Translated.xlsx output/ --out scores.json
 ```
+
+## 12. Fixing the issues found in the full run — check run `ec2-20261017t063722z` (2026-10-17)
+
+### 12.1 Strings over 434 characters were never saved to the translation memory
+
+**Flaw:**
+- The memory used the English text itself as the database key.
+- SQL Server keys hold at most 900 bytes, which is 434 characters, but KDE4 has strings up to 660 characters.
+- Section 11 worked around this by skipping those saves, so long strings would be retranslated on every run.
+
+**Fix:**
+- The key is now a 32-byte **SHA-256 of the text** (`SourceHash BINARY(32)`), and the text sits in an unlimited `NVARCHAR(MAX)` column. Lookups and saves use the hash.
+- `db_admin.py init` drops a table in the old layout and recreates it. The memory is a cache, so nothing of value is lost.
+
+### 12.2 `<unk>`: characters the model cannot write
+
+**Flaw:**
+- 4 strings in the full run came back empty: `thistle` (ja), and `Candle`, `crab`, `goy Y` (zh).
+- **Cause, reproduced with the same model locally:**
+  - for these strings NLLB's best output is the `<unk>` (unknown) token;
+  - decoding with `skip_special_tokens=True` deletes it, leaving an empty string;
+  - unrelated to batching: beam 5 and the length cap give the same.
+- **A full re-translation of the zh and ja sets showed the empty strings were the visible tip.** **614 of 10,054 Chinese outputs (6.1%)** and 8 Japanese contained `<unk>`. In most, a character was **silently deleted**, changing the meaning:
+  - "New Folder" → 新文件 ("new file");
+  - "Dolphin Toolbar" → 鱼工具 ("fish tool");
+  - "Bitrate" → 率 ("rate").
+
+**Options measured** on exactly those strings (chrF against the spreadsheet):
+
+| Option | zh (614 strings) | ja (8 strings) | Behaviour |
+|---|---:|---:|---|
+| Keep the model's text (before) | 26.20 | 6.61 | missing characters, often wrong meaning |
+| Retry with `disable_unk` | 25.97 | 33.18 | fixes some; others become "??" or wrong words ("Tunnels" → 突尼斯 "Tunisia", "thistle" → 炭水化物 "carbohydrate") |
+| **Keep the English and report it (chosen)** | 7.70 | 31.71 | never a wrong word; listed in the log for a person to translate |
+
+**Decision (2026-10-17):** keep the English and report it.
+- In localized software a visibly untranslated string can be found and fixed; a wrong word cannot.
+- The cost is a lower measured chrF for Chinese, because chrF counts English as untranslated.
+
+**Fix:**
+- Any output containing `<unk>` is discarded. The target stays empty, so Phase 3 keeps the English.
+- The string is not saved to the memory, so a later run or a person can fill it.
+- Each chunk logs `⚠️ N string(s) kept in English … [examples]`.
+
+### 12.3 Check run
+
+**Input:** 383 KDE4 strings: the 3 longest, 25 known `<unk>` cases and all 355 placeholder strings. Two identical files (`kde4-check-a/b.resx`, `config.kde4-check.json`), 12 languages.
+- File **a** tests translation.
+- File **b** tests that the memory finds every saved string again by its hash.
+
+| | Result |
+|---|---|
+| Files | 24 of 24 succeeded, 0 failures, no SQL errors |
+| File a: translation | 383 strings × 12 languages, 71–92 s per language |
+| File b: memory | **100% hits in 10 languages** (0.1 s each, no model work); ja 98.2% (7 kept-English strings retried), zh 92.2% (30 retried, 18 s) |
+| Same output from the memory | yes (zh file a == file b) |
+| Long strings | saved and found by hash; all 3 translated (de); in zh one was kept in English because of `<unk>` |
+| Kept in English | zh 30, ja 7, all listed in the log |
+| Placeholders kept | zh 99.72%, de 99.44% (same as section 10) |
+
+**Effect on the full KDE4 run:**
+- The section 11 output still has the old behaviour.
+- A rerun would keep about 614 Chinese and 8 Japanese strings in English, which would lower Chinese chrF from 39.84.
+- Every other language is unchanged.
+
+**Raw data:**
+- `s3://<data-bucket>/runs/ec2-20261017t063722z/` (output, translated XLIFF).
+- CloudWatch `/cloud-loc/ec2-runner`.
+- The `<unk>` measurement was a one-off local script using the same model, beam 2, batching and length cap as production; numbers above.
+
+**To repeat the check:**
+```bash
+RUNNER_TIMEOUT_SECONDS=3600 PIPELINE_CONFIG=aws/config.kde4-check.json \
+  INPUT_S3="s3://<data-bucket>/datasets/kde4/kde4-check-a.resx s3://<data-bucket>/datasets/kde4/kde4-check-b.resx" \
+  bash aws/infra/run_on_ec2.sh
+```
