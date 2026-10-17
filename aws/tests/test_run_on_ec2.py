@@ -128,3 +128,12 @@ def test_safety_shutdown_follows_the_run_timeout(run_on_ec2):
     command = json.loads(params.read_text())["commands"][0]
     assert "shutdown -h +390" in command
     assert command.index("shutdown -h +390") < command.index("run_all.sh")
+
+
+def test_memory_experiment_settings_reach_the_machine(run_on_ec2):
+    result, _, _, params = run_on_ec2(RUNNER_TASK="tm-experiment", TM_STEPS="v1:reset v2-r1",
+                                      TM_INPUT_PREFIX="s3://b/datasets/kde4/tm")
+    assert result.returncode == 0, result.stdout + result.stderr
+    command = json.loads(params.read_text())["commands"][0]
+    assert "TM_STEPS='v1:reset v2-r1'" in command and "TM_INPUT_PREFIX='s3://b/datasets/kde4/tm'" in command
+    assert "experiment/steps.tsv" in result.stdout

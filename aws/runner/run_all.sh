@@ -37,6 +37,38 @@ case "${RUNNER_TASK:-pipeline}" in
     echo "=== Batching benchmark (run $RUN_ID) ==="
     PHASE2_TASK=bench bash aws/scripts/run_phase2.sh
     exit 0 ;;
+  tm-experiment)
+    # Translation-memory experiment: several app versions on one machine, memory kept between steps.
+    # TM_STEPS: space-separated "name[=file][:reset]", e.g. "v1:reset v2-r1 v4-cold=v4-r1:reset";
+    # step "name" translates $TM_INPUT_PREFIX/kde4tm-<file>.resx as run $RUN_ID-<name>.
+    : "${TM_STEPS:?TM_STEPS must be set}"
+    : "${TM_INPUT_PREFIX:?TM_INPUT_PREFIX must be set}"
+    export PIPELINE_CONFIG=aws/config.kde4tm.json
+    base_run="$RUN_ID"
+    timings="tm-steps.tsv"
+    now() { python3 -c 'import time; print(time.time())'; }
+    secs() { awk "BEGIN { printf \"%.1f\", $2 - $1 }"; }
+    printf 'step\trun_id\tfile\treset\tphase1_s\tphase2_s\tphase3_s\ttotal_s\n' > "$timings"
+    mkdir -p source-folder
+    for step in $TM_STEPS; do
+      reset=false
+      spec="$step"
+      case "$spec" in *:reset) reset=true; spec="${spec%:reset}" ;; esac
+      name="${spec%%=*}"
+      file="${spec#*=}"
+      export RUN_ID="$base_run-$name" RESET_TM="$reset"
+      echo "=== Memory experiment step $name (file $file, reset $reset, run $RUN_ID) ==="
+      aws s3 cp "$TM_INPUT_PREFIX/kde4tm-$file.resx" source-folder/kde4tm.resx --only-show-errors
+      t0="$(now)"; python3 aws/phase1.py "$PIPELINE_CONFIG"
+      t1="$(now)"; bash aws/scripts/run_phase2.sh
+      t2="$(now)"; python3 aws/phase3.py "$PIPELINE_CONFIG"
+      t3="$(now)"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$RUN_ID" "$file" "$reset" \
+        "$(secs "$t0" "$t1")" "$(secs "$t1" "$t2")" "$(secs "$t2" "$t3")" "$(secs "$t0" "$t3")" >> "$timings"
+    done
+    aws s3 cp "$timings" "s3://$BUCKET/runs/$base_run/experiment/steps.tsv" --only-show-errors
+    echo "✅ Memory experiment finished: s3://$BUCKET/runs/$base_run/experiment/steps.tsv"
+    exit 0 ;;
   *) echo "❌ Unknown RUNNER_TASK: ${RUNNER_TASK}"; exit 1 ;;
 esac
 

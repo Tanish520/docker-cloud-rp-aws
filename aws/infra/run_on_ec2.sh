@@ -6,7 +6,8 @@
 # PHASE2_CPUSET (default 0,1), RUNNER_POLL_SECONDS (default 20),
 # RUNNER_TASK (pipeline = Phases 1-3, default; batching-bench = the batching benchmark),
 # RUNNER_TIMEOUT_SECONDS (default 7200), BENCH_ARGS (extra benchmark options, e.g. --kde4 s3://...),
-# PIPELINE_CONFIG (default aws/config.json), INPUT_S3 (space-separated .resx files copied into source-folder/ first).
+# PIPELINE_CONFIG (default aws/config.json), INPUT_S3 (space-separated .resx files copied into source-folder/ first),
+# TM_STEPS and TM_INPUT_PREFIX (RUNNER_TASK=tm-experiment, see runner/run_all.sh).
 set -euo pipefail
 
 REGION="${AWS_REGION:-ap-south-1}"
@@ -19,6 +20,8 @@ TIMEOUT="${RUNNER_TIMEOUT_SECONDS:-7200}"
 BENCH_ARGS="${BENCH_ARGS:-}"
 PIPELINE_CONFIG="${PIPELINE_CONFIG:-aws/config.json}"
 INPUT_S3="${INPUT_S3:-}"
+TM_STEPS="${TM_STEPS:-}"
+TM_INPUT_PREFIX="${TM_INPUT_PREFIX:-}"
 # The launch template's 4-hour safety shutdown is moved to the timeout + 30 minutes.
 SHUTDOWN_MINUTES=$(( TIMEOUT / 60 + 30 ))
 
@@ -77,7 +80,7 @@ shutdown -h +$SHUTDOWN_MINUTES
 test -x /opt/venv/bin/python || { echo 'Runner bootstrap failed (no /opt/venv)'; exit 1; }
 mkdir -p /opt/run && cd /opt/run
 aws s3 cp s3://$BUCKET/runs/$RUN_ID/source.tar.gz - --region $REGION | tar -xz
-RUN_ID=$RUN_ID BUCKET=$BUCKET DB_HOST=$DB_HOST DB_SECRET_ARN='$DB_SECRET_ARN' AWS_REGION=$REGION RESET_TM=$RESET_TM PHASE2_CPUSET=$PHASE2_CPUSET RUNNER_TASK=$RUNNER_TASK BENCH_ARGS='$BENCH_ARGS' PIPELINE_CONFIG='$PIPELINE_CONFIG' INPUT_S3='$INPUT_S3' bash aws/runner/run_all.sh"
+RUN_ID=$RUN_ID BUCKET=$BUCKET DB_HOST=$DB_HOST DB_SECRET_ARN='$DB_SECRET_ARN' AWS_REGION=$REGION RESET_TM=$RESET_TM PHASE2_CPUSET=$PHASE2_CPUSET RUNNER_TASK=$RUNNER_TASK BENCH_ARGS='$BENCH_ARGS' PIPELINE_CONFIG='$PIPELINE_CONFIG' INPUT_S3='$INPUT_S3' TM_STEPS='$TM_STEPS' TM_INPUT_PREFIX='$TM_INPUT_PREFIX' bash aws/runner/run_all.sh"
 PARAMS="$(python3 -c 'import json, sys; print(json.dumps({"commands": [sys.argv[1]], "executionTimeout": [sys.argv[2]]}))' "$COMMAND" "$TIMEOUT")"
 
 CMD_ID="$(aws ssm send-command --region "$REGION" --instance-ids "$INSTANCE_ID" --document-name AWS-RunShellScript \
@@ -102,6 +105,10 @@ if [ "$status" != "Success" ]; then
   aws ssm get-command-invocation --region "$REGION" --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
     --query StandardErrorContent --output text || true
   exit 1
+fi
+if [ "$RUNNER_TASK" = "tm-experiment" ]; then
+  echo "Step timings: s3://$BUCKET/runs/$RUN_ID/experiment/steps.tsv (each step is run $RUN_ID-<step>)"
+  exit 0
 fi
 if [ "$RUNNER_TASK" = "batching-bench" ]; then
   echo "Benchmark results: s3://$BUCKET/runs/$RUN_ID/bench/results.json"

@@ -45,3 +45,35 @@ def test_a_missing_output_file_or_string_is_counted(tmp_path):
 
     assert report["per_language"]["de"]["missing"] == 1
     assert report["per_language"]["fr"]["missing"] == 2
+
+
+def test_versions_add_new_strings_never_seen_in_another_version(tmp_path):
+    items = [(f"String {i}", {"de": f"Zeile {i}"}) for i in range(40)]
+    manifest = kde4.write_versions(items, tmp_path, base=10, sizes={"v2": 1, "v3": 2, "v4": 3}, repeats=2)
+
+    assert sorted(manifest) == ["v1", "v2-r1", "v2-r2", "v3-r1", "v3-r2", "v4-r1", "v4-r2"]
+    v1 = set(manifest["v1"]["keys"])
+    assert len(v1) == 10 and manifest["v1"]["new"] == 10
+    new_sets = []
+    for name in ("v2-r1", "v3-r1", "v4-r1", "v2-r2", "v3-r2", "v4-r2"):
+        keys = set(manifest[name]["keys"])
+        assert v1 < keys
+        new_sets.append(keys - v1)
+        assert manifest[name]["new"] == len(keys - v1)
+    assert [len(n) for n in new_sets] == [1, 2, 3, 1, 2, 3]
+    assert len(set().union(*new_sets)) == 12                      # all new strings are different
+    values = resx_values(tmp_path / "kde4tm-v2-r1.resx")
+    assert len(values) == 11 and all(values[f"KDE4_{k}"] == f"String {k}" for k in manifest["v2-r1"]["keys"])
+
+
+def test_a_version_is_scored_on_its_own_strings_only(tmp_path):
+    keys = [1]
+    (tmp_path / "de-DE").mkdir()
+    kde4.write_resx([ITEMS[1]], tmp_path / "de-DE" / "kde4tm.resx", keys=keys)
+    for d in ("de-DE",):
+        values = resx_values(tmp_path / d / "kde4tm.resx")
+        assert values == {"KDE4_1": "Save <b>file</b>"}
+
+    report = kde4.score(ITEMS, ["de"], tmp_path, keys=keys, resx_name="kde4tm.resx")
+
+    assert report["strings"] == 1 and report["per_language"]["de"]["missing"] == 0
