@@ -136,3 +136,10 @@ def test_twin_setting_reaches_the_translator(run_phase2):
     result, calls = run_phase2(TM_TWINS="off")
     assert result.returncode == 0, result.stdout + result.stderr
     assert "-e TM_TWINS" in translation_call(calls)
+
+
+def test_model_folder_is_not_copied_into_the_image():
+    # The 629 MB model is mounted at run time (-v .../translator:/app); copying it into the image
+    # added ~15 s to every build (5 s context transfer, 8.6 s COPY, 2.6 s export).
+    ignored = (AWS_DIR / "translator" / ".dockerignore").read_text(encoding="utf-8").split()
+    assert "nllb_ct2" in ignored
