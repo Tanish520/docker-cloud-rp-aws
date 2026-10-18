@@ -21,7 +21,7 @@ AWS_TRANSLATION = AWS_TRANSLATOR / "translation.py"
 AZURE_ONLY_IMPORTS = {"from azure.storage.blob import BlobServiceClient"}
 AWS_ONLY_IMPORTS = {"import aws_runtime", "from s3_store import RunStore",
                     "from placeholders import protect, restore",
-                    "from batching import decoding_cap, plan_token_batches", "import hashlib",
+                    "from batching import decoding_cap, plan_balanced", "import hashlib",
                     "from templates import adapt, template_of"}
 
 

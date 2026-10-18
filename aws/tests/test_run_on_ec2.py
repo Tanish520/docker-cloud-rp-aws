@@ -18,7 +18,9 @@ case "$args" in
   "cloudformation describe-stacks"*DbEndpoint*) echo "db.example" ;;
   "cloudformation describe-stacks"*DbSecretArn*) echo "arn:aws:secretsmanager:ap-south-1:1:secret:rds!db-x" ;;
   "s3 cp - "*) cat > "$STUB_UPLOAD" ;;
+  "ec2 describe-instances"*) printf '%s\n' "${STUB_WARM:-}" ;;
   "ec2 run-instances"*) echo "i-0abc" ;;
+  "ec2 start-instances"*|"ec2 stop-instances"*) ;;
   "ec2 wait"*) ;;
   "ssm describe-instance-information"*) echo "Online" ;;
   "ssm send-command"*)
@@ -64,7 +66,7 @@ def run_on_ec2(tmp_path):
 
 
 def test_successful_run_uploads_source_runs_all_phases_logs_to_cloudwatch_and_terminates(run_on_ec2):
-    result, calls, upload, params = run_on_ec2()
+    result, calls, upload, params = run_on_ec2(RUNNER_REUSE="false")
     assert result.returncode == 0, result.stdout + result.stderr
     [cp] = [c for c in calls if c.startswith("aws s3 cp - ")]
     assert "s3://bucket/runs/ec2-" in cp and cp.split()[4].endswith("/source.tar.gz")
@@ -79,7 +81,7 @@ def test_successful_run_uploads_source_runs_all_phases_logs_to_cloudwatch_and_te
 
 
 def test_failed_run_exits_non_zero_shows_the_error_and_still_terminates(run_on_ec2):
-    result, calls, _, _ = run_on_ec2(STUB_STATUS="Failed")
+    result, calls, _, _ = run_on_ec2(STUB_STATUS="Failed", RUNNER_REUSE="false")
     assert result.returncode != 0
     assert "boom: phase 2 failed" in result.stdout
     assert calls[-1].startswith("aws ec2 terminate-instances")
@@ -137,3 +139,40 @@ def test_memory_experiment_settings_reach_the_machine(run_on_ec2):
     command = json.loads(params.read_text())["commands"][0]
     assert "TM_STEPS='v1:reset v2-r1'" in command and "TM_INPUT_PREFIX='s3://b/datasets/kde4/tm'" in command
     assert "experiment/steps.tsv" in result.stdout
+
+
+def test_a_stopped_ready_runner_is_started_reused_and_stopped_again(run_on_ec2):
+    # Its disk keeps the built image and the model, so a run skips the ~83 s build and the download.
+    result, calls, _, params = run_on_ec2(STUB_WARM="i-0warm")
+    assert result.returncode == 0, result.stdout + result.stderr
+    [find] = [c for c in calls if c.startswith("aws ec2 describe-instances")]
+    assert "Name=tag:cloud-loc-runner,Values=ready" in find and "Name=instance-state-name,Values=stopped" in find
+    assert any(c.startswith("aws ec2 start-instances") and "i-0warm" in c for c in calls)
+    assert not any("run-instances" in c for c in calls)
+    assert calls[-1].startswith("aws ec2 stop-instances") and "i-0warm" in calls[-1]
+    assert not any("terminate-instances" in c for c in calls)
+
+
+def test_without_a_ready_runner_one_is_created_that_stops_instead_of_terminating(run_on_ec2):
+    result, calls, _, _ = run_on_ec2()
+    assert result.returncode == 0, result.stdout + result.stderr
+    [launch] = [c for c in calls if c.startswith("aws ec2 run-instances")]
+    assert "--instance-initiated-shutdown-behavior stop" in launch
+    assert "Key=cloud-loc-runner,Value=ready" in launch
+    assert calls[-1].startswith("aws ec2 stop-instances") and "i-0abc" in calls[-1]
+
+
+def test_a_failed_run_still_stops_the_ready_runner(run_on_ec2):
+    result, calls, _, _ = run_on_ec2(STUB_WARM="i-0warm", STUB_STATUS="Failed")
+    assert result.returncode != 0
+    assert calls[-1].startswith("aws ec2 stop-instances") and "i-0warm" in calls[-1]
+
+
+def test_the_workspace_is_cleaned_but_the_model_is_kept(run_on_ec2):
+    result, _, _, params = run_on_ec2(STUB_WARM="i-0warm")
+    command = json.loads(params.read_text())["commands"][0]
+    keep = command.index("mv /opt/run/aws/translator/nllb_ct2 /opt/model-cache")
+    wipe = command.index("rm -rf /opt/run")
+    unpack = command.index("tar -xz")
+    restore = command.index("mv /opt/model-cache/nllb_ct2 aws/translator/nllb_ct2")
+    assert keep < wipe < unpack < restore

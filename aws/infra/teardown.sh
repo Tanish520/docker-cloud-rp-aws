@@ -40,6 +40,17 @@ for output_key in DataBucketName ArtifactBucketName; do
   aws s3 rm "s3://$bucket" --recursive --region "$REGION" --only-show-errors
 done
 
+# Ready runners (run_on_ec2.sh) are kept stopped between runs, outside the stack; they use its security group.
+ready="$(aws ec2 describe-instances --region "$REGION" --filters "Name=tag:cloud-loc-runner,Values=ready" \
+  "Name=instance-state-name,Values=pending,running,stopping,stopped" --query 'Reservations[].Instances[].InstanceId' --output text)"
+if [ -n "$ready" ] && [ "$ready" != "None" ]; then
+  echo "🧹 Terminating ready runner(s): $ready"
+  # shellcheck disable=SC2086
+  aws ec2 terminate-instances --region "$REGION" --instance-ids $ready >/dev/null
+  # shellcheck disable=SC2086
+  aws ec2 wait instance-terminated --region "$REGION" --instance-ids $ready
+fi
+
 echo "🗑️ Deleting stack $STACK_NAME (the database takes about 10 minutes)..."
 aws cloudformation delete-stack --region "$REGION" --stack-name "$STACK_NAME"
 aws cloudformation wait stack-delete-complete --region "$REGION" --stack-name "$STACK_NAME"

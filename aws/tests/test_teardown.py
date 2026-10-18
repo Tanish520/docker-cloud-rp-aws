@@ -20,6 +20,7 @@ case "$args" in
     done ;;
   "s3api list-multipart-uploads"*"--bucket data-bucket "*) printf '%b\n' "${STUB_UPLOADS:-None}" ;;
   "s3api list-multipart-uploads"*) echo "None" ;;
+  "ec2 describe-instances"*) printf '%s\n' "${STUB_READY:-}" ;;
   "s3 rm"*)
     for b in $STUB_MISSING_BUCKETS; do
       case "$args" in *"s3://$b"*) exit 1 ;; esac
@@ -67,3 +68,15 @@ def test_missing_stack_is_a_no_op(teardown):
     result, calls = teardown(STUB_NO_STACK="1")
     assert result.returncode == 0
     assert not any("delete-stack" in c for c in calls)
+
+
+def test_ready_runners_are_terminated_before_the_stack_is_deleted(teardown):
+    # A stopped ready runner uses the stack's security group and would block the deletion.
+    result, calls = teardown(STUB_READY="i-0warm i-0warm2")
+    assert result.returncode == 0, result.stdout + result.stderr
+    [find] = [c for c in calls if c.startswith("aws ec2 describe-instances")]
+    assert "Name=tag:cloud-loc-runner,Values=ready" in find
+    terminate = [i for i, c in enumerate(calls) if c.startswith("aws ec2 terminate-instances") and "i-0warm i-0warm2" in c]
+    wait = [i for i, c in enumerate(calls) if c.startswith("aws ec2 wait instance-terminated")]
+    delete = [i for i, c in enumerate(calls) if c.startswith("aws cloudformation delete-stack")]
+    assert terminate and wait and delete and terminate[0] < wait[0] < delete[0]

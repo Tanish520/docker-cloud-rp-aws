@@ -4,6 +4,8 @@
 # its output goes to CloudWatch Logs, and the machine is terminated afterwards.
 # Settings (environment variables): AWS_REGION, STACK_NAME, RESET_TM (default false: keep the translation memory),
 # PHASE2_CPUSET (default 0,1), RUNNER_POLL_SECONDS (default 20),
+# RUNNER_REUSE (default true: start the stopped "ready" runner, whose disk keeps the built image and the
+#   model, and stop it afterwards; false: a fresh machine that is terminated afterwards),
 # RUNNER_TASK (pipeline = Phases 1-3, default; batching-bench = the batching benchmark),
 # RUNNER_TIMEOUT_SECONDS (default 7200), BENCH_ARGS (extra benchmark options, e.g. --kde4 s3://...),
 # PIPELINE_CONFIG (default aws/config.json), INPUT_S3 (space-separated .resx files copied into source-folder/ first),
@@ -16,6 +18,7 @@ RESET_TM="${RESET_TM:-false}"
 PHASE2_CPUSET="${PHASE2_CPUSET:-0,1}"
 POLL="${RUNNER_POLL_SECONDS:-20}"
 RUNNER_TASK="${RUNNER_TASK:-pipeline}"
+RUNNER_REUSE="${RUNNER_REUSE:-true}"
 TIMEOUT="${RUNNER_TIMEOUT_SECONDS:-7200}"
 BENCH_ARGS="${BENCH_ARGS:-}"
 PIPELINE_CONFIG="${PIPELINE_CONFIG:-aws/config.json}"
@@ -50,12 +53,33 @@ RUN_ID="ec2-$(date -u +%Y%m%dt%H%M%Sz)"
 echo "📦 Uploading the last commit for run $RUN_ID ..."
 git archive --format=tar.gz HEAD | aws s3 cp - "s3://$BUCKET/runs/$RUN_ID/source.tar.gz" --region "$REGION" --only-show-errors
 
-echo "🖥️ Starting the runner machine..."
-INSTANCE_ID="$(aws ec2 run-instances --region "$REGION" --launch-template "LaunchTemplateId=$TEMPLATE_ID" \
-  --query 'Instances[0].InstanceId' --output text)"
+INSTANCE_ID=""
+if [ "$RUNNER_REUSE" = "true" ]; then
+  INSTANCE_ID="$(aws ec2 describe-instances --region "$REGION" --filters "Name=tag:cloud-loc-runner,Values=ready" \
+    "Name=instance-state-name,Values=stopped" --query 'Reservations[].Instances[].InstanceId' --output text | awk '{print $1}')"
+fi
+if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ]; then
+  echo "🖥️ Starting the ready runner $INSTANCE_ID (built image and model already on its disk)..."
+  aws ec2 start-instances --region "$REGION" --instance-ids "$INSTANCE_ID" >/dev/null
+elif [ "$RUNNER_REUSE" = "true" ]; then
+  echo "🖥️ No stopped ready runner; creating one (it is stopped, not terminated, after the run)..."
+  INSTANCE_ID="$(aws ec2 run-instances --region "$REGION" --launch-template "LaunchTemplateId=$TEMPLATE_ID" \
+    --instance-initiated-shutdown-behavior stop \
+    --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$STACK_NAME-runner-ready},{Key=Project,Value=$STACK_NAME},{Key=cloud-loc-runner,Value=ready}]" \
+    --query 'Instances[0].InstanceId' --output text)"
+else
+  echo "🖥️ Starting a fresh runner machine..."
+  INSTANCE_ID="$(aws ec2 run-instances --region "$REGION" --launch-template "LaunchTemplateId=$TEMPLATE_ID" \
+    --query 'Instances[0].InstanceId' --output text)"
+fi
 cleanup() {
-  echo "🧹 Terminating $INSTANCE_ID ..."
-  aws ec2 terminate-instances --region "$REGION" --instance-ids "$INSTANCE_ID" >/dev/null || true
+  if [ "$RUNNER_REUSE" = "true" ]; then
+    echo "🧹 Stopping $INSTANCE_ID (kept for the next run) ..."
+    aws ec2 stop-instances --region "$REGION" --instance-ids "$INSTANCE_ID" >/dev/null || true
+  else
+    echo "🧹 Terminating $INSTANCE_ID ..."
+    aws ec2 terminate-instances --region "$REGION" --instance-ids "$INSTANCE_ID" >/dev/null || true
+  fi
 }
 trap cleanup EXIT
 
@@ -78,8 +102,12 @@ COMMAND="set -euo pipefail
 cloud-init status --wait >/dev/null || true
 shutdown -h +$SHUTDOWN_MINUTES
 test -x /opt/venv/bin/python || { echo 'Runner bootstrap failed (no /opt/venv)'; exit 1; }
-mkdir -p /opt/run && cd /opt/run
+# A reused runner keeps the model between runs; everything else is unpacked fresh.
+mkdir -p /opt/model-cache
+if [ -d /opt/run/aws/translator/nllb_ct2 ]; then rm -rf /opt/model-cache/nllb_ct2; mv /opt/run/aws/translator/nllb_ct2 /opt/model-cache/; fi
+rm -rf /opt/run && mkdir -p /opt/run && cd /opt/run
 aws s3 cp s3://$BUCKET/runs/$RUN_ID/source.tar.gz - --region $REGION | tar -xz
+if [ -d /opt/model-cache/nllb_ct2 ]; then mv /opt/model-cache/nllb_ct2 aws/translator/nllb_ct2; fi
 RUN_ID=$RUN_ID BUCKET=$BUCKET DB_HOST=$DB_HOST DB_SECRET_ARN='$DB_SECRET_ARN' AWS_REGION=$REGION RESET_TM=$RESET_TM PHASE2_CPUSET=$PHASE2_CPUSET RUNNER_TASK=$RUNNER_TASK BENCH_ARGS='$BENCH_ARGS' PIPELINE_CONFIG='$PIPELINE_CONFIG' INPUT_S3='$INPUT_S3' TM_STEPS='$TM_STEPS' TM_INPUT_PREFIX='$TM_INPUT_PREFIX' bash aws/runner/run_all.sh"
 PARAMS="$(python3 -c 'import json, sys; print(json.dumps({"commands": [sys.argv[1]], "executionTimeout": [sys.argv[2]]}))' "$COMMAND" "$TIMEOUT")"
 

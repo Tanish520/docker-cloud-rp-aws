@@ -384,6 +384,7 @@ def targets(path):
 def test_file_is_translated_in_chunks_of_similar_length(translation, monkeypatch, tmp_path):
     model = use_model(translation, monkeypatch, lambda s: s.upper())
     monkeypatch.setattr(translation, "CHUNK_SIZE", 2)
+    monkeypatch.setattr(translation, "ENGINE_WORKERS", 1)                     # one batch per chunk, to see the chunks
     path = xlf_with(tmp_path, ["c c c", "a", "d d d d", "b b"])
 
     asyncio.run(translation.process_xlf_file(str(path), "es-ES", RecordingConn(), None))
@@ -471,6 +472,7 @@ def test_a_language_s_memory_is_loaded_once_per_run(translation, monkeypatch, tm
 def test_file_reports_lookup_and_real_token_counts(translation, monkeypatch, tmp_path):
     use_model(translation, monkeypatch, lambda s: s + " x")
     monkeypatch.setattr(translation, "TOKEN_LIMIT", 10)
+    monkeypatch.setattr(translation, "ENGINE_WORKERS", 1)                     # keep one batch to check padding
     path = xlf_with(tmp_path, ["a", "b b b"])
 
     stats, *_ = asyncio.run(translation.process_xlf_file(str(path), "es-ES", RecordingConn(), None))
@@ -572,3 +574,22 @@ def test_kept_in_english_entries_are_never_adapted_as_twins(translation, monkeyp
     asyncio.run(translation.process_xlf_file(str(path), "zh-CN", conn, None))
 
     assert model.seen == ["crab 2"]
+
+
+def test_a_small_call_is_split_so_every_engine_worker_gets_a_batch(translation, monkeypatch):
+    # A small commit gives ~30 new strings per language: one batch, so one of the two workers sat idle.
+    model = use_model(translation, monkeypatch, lambda s: s.upper())
+
+    translations, _, _ = translation.translate_local(["a b", "c d e f", "g h", "i j k l"], "es-ES")
+
+    assert [sources for sources, _, _ in model.batches] == [["a b", "g h"], ["c d e f", "i j k l"]]
+    assert translations == ["A B", "C D E F", "G H", "I J K L"]
+
+
+def test_a_large_call_keeps_full_batches(translation, monkeypatch):
+    model = use_model(translation, monkeypatch, lambda s: s)
+    monkeypatch.setattr(translation, "TOKEN_LIMIT", 4)
+
+    translation.translate_local(["a b", "c d", "e f", "g h", "i j", "k l"], "es-ES")      # 12 tokens > 2 x 4
+
+    assert [len(sources) for sources, _, _ in model.batches] == [2, 2, 2]

@@ -64,13 +64,17 @@ if ! s3_reachable; then
 fi
 
 echo "📦 Looking for cached model $MODEL_KEY..."
-if python aws/model_cache.py fetch --dir "$MODEL_DIR" && model_loads; then
+if python aws/model_cache.py present --dir "$MODEL_DIR"; then
+  echo "✅ Using the model already on this machine."      # a reused runner: no download, no test load
+elif python aws/model_cache.py fetch --dir "$MODEL_DIR" && model_loads; then
   echo "✅ Using cached model."
+  python aws/model_cache.py mark --dir "$MODEL_DIR"
 else
   python aws/model_cache.py invalidate
   convert_model
   model_loads
   python aws/model_cache.py publish --dir "$MODEL_DIR"
+  python aws/model_cache.py mark --dir "$MODEL_DIR"
 fi
 
 if [ "$PHASE2_TASK" = "bench" ]; then

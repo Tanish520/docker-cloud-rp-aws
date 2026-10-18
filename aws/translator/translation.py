@@ -22,7 +22,7 @@ from transformers import AutoTokenizer
 import aws_runtime
 from s3_store import RunStore
 from placeholders import protect, restore
-from batching import decoding_cap, plan_token_batches
+from batching import decoding_cap, plan_balanced
 from templates import adapt, template_of
 from opencensus.ext.azure.log_exporter import AzureLogHandler
 from opencensus.ext.azure import metrics_exporter
@@ -303,7 +303,8 @@ def translate_local(texts, target_lang):
             # once so both engine workers stay busy. Output is capped at 2x the longest input + 10
             # tokens so one runaway string cannot hold up its batch (BATCHING_RESULTS.md section 9).
             pending = []
-            for group in plan_token_batches(lengths, TOKEN_LIMIT):
+            # A small call (a small commit: ~30 strings per language) is split so each worker gets a batch.
+            for group in plan_balanced(lengths, TOKEN_LIMIT, ENGINE_WORKERS):
                 file_extra["padded_positions"] = file_extra.get("padded_positions", 0) + max(lengths[i] for i in group) * len(group)
                 file_extra["real_positions"] = file_extra.get("real_positions", 0) + sum(lengths[i] for i in group)
                 pending.append((group, translator.translate_batch(

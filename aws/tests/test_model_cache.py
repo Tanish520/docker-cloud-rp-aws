@@ -91,3 +91,22 @@ def test_cli_fetch_reports_missing_with_exit_code_3(s3, tmp_path, monkeypatch):
 def test_unsafe_model_keys_are_rejected(bad):
     with pytest.raises(ValueError):
         model_cache.cache_prefix(bad)
+
+
+def test_a_marked_local_model_is_present_only_for_its_key(tmp_path):
+    model_dir = tmp_path / "nllb_ct2"
+    model_dir.mkdir()
+    assert model_cache.present(str(model_dir), KEY) is False
+    model_cache.mark(str(model_dir), KEY)
+    assert model_cache.present(str(model_dir), KEY) is True
+    assert model_cache.present(str(model_dir), "other-model_int8_ct2-9.9.9") is False
+
+
+def test_the_local_mark_is_never_published(s3, tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "model.bin").write_bytes(b"weights")
+    model_cache.mark(str(src), KEY)
+    model_cache.publish(s3, BUCKET, KEY, str(src))
+    keys = [o["Key"] for o in s3.list_objects_v2(Bucket=BUCKET, Prefix=PREFIX)["Contents"]]
+    assert not any(k.endswith(model_cache.LOCAL_MARK) for k in keys)

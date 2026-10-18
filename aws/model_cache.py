@@ -13,6 +13,8 @@ from botocore.exceptions import ClientError
 
 MARKER = "_COMPLETE"
 EXIT_MISSING = 3
+# Written into a local model folder once that model has loaded; a reused runner then skips the download.
+LOCAL_MARK = ".model-key"
 
 
 def cache_prefix(model_key):
@@ -47,6 +49,20 @@ def fetch(client, bucket, model_key, dest):
     return True
 
 
+def present(dest, model_key):
+    """True when dest holds this model and it already loaded once on this machine (mark)."""
+    try:
+        with open(os.path.join(dest, LOCAL_MARK), encoding="utf-8") as f:
+            return f.read().strip() == model_key
+    except OSError:
+        return False
+
+
+def mark(dest, model_key):
+    with open(os.path.join(dest, LOCAL_MARK), "w", encoding="utf-8") as f:
+        f.write(model_key)
+
+
 def invalidate(client, bucket, model_key):
     client.delete_object(Bucket=bucket, Key=cache_prefix(model_key) + MARKER)
 
@@ -55,7 +71,8 @@ def publish(client, bucket, model_key, src):
     files = []
     for root, _, names in os.walk(src):
         for name in names:
-            files.append(os.path.join(root, name))
+            if name != LOCAL_MARK:
+                files.append(os.path.join(root, name))
     if not files:
         raise ValueError(f"no model files to publish in {src}")
     prefix = cache_prefix(model_key)
@@ -67,16 +84,25 @@ def publish(client, bucket, model_key, src):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Fetch, publish or invalidate the cached model in S3.")
-    parser.add_argument("command", choices=["fetch", "publish", "invalidate"])
+    parser = argparse.ArgumentParser(description="Fetch, publish or invalidate the cached model in S3; "
+                                                 "check (present) or record (mark) the model on this machine.")
+    parser.add_argument("command", choices=["fetch", "publish", "invalidate", "present", "mark"])
     parser.add_argument("--dir", help="Local model directory (fetch destination or publish source).")
     parser.add_argument("--bucket", default=os.environ.get("BUCKET"))
     parser.add_argument("--model-key", default=os.environ.get("MODEL_KEY"))
     args = parser.parse_args(argv)
     if not args.bucket or not args.model_key:
         parser.error("--bucket (or BUCKET) and --model-key (or MODEL_KEY) are required")
-    if args.command in ("fetch", "publish") and not args.dir:
+    if args.command in ("fetch", "publish", "present", "mark") and not args.dir:
         parser.error(f"{args.command} needs --dir")
+    if args.command == "present":
+        if present(args.dir, args.model_key):
+            print(f"✅ Model {args.model_key} is already on this machine")
+            return 0
+        return EXIT_MISSING
+    if args.command == "mark":
+        mark(args.dir, args.model_key)
+        return 0
 
     client = boto3.client("s3")
     if args.command == "fetch":

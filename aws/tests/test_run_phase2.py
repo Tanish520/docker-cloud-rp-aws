@@ -25,6 +25,7 @@ exit 0
 """,
     "python": r"""#!/bin/bash
 echo "python $*" >> "$STUB_LOG"
+case "$*" in *"model_cache.py present"*) exit "${STUB_MODEL_PRESENT:-3}" ;; esac
 exit 0
 """,
     "aws": r"""#!/bin/bash
@@ -143,3 +144,18 @@ def test_model_folder_is_not_copied_into_the_image():
     # added ~15 s to every build (5 s context transfer, 8.6 s COPY, 2.6 s export).
     ignored = (AWS_DIR / "translator" / ".dockerignore").read_text(encoding="utf-8").split()
     assert "nllb_ct2" in ignored
+
+
+def test_a_model_already_on_the_machine_skips_download_and_test_load(run_phase2):
+    result, calls = run_phase2(STUB_MODEL_PRESENT="0")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert any("model_cache.py present" in c for c in calls)
+    assert not any("model_cache.py fetch" in c for c in calls)
+    assert not any("ctranslate2.Translator('nllb_ct2'" in c for c in calls)
+    assert any("translation.py" in c for c in calls)
+
+
+def test_a_downloaded_model_is_marked_once_it_loads(run_phase2):
+    result, calls = run_phase2()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert first(calls, "model_cache.py fetch") < first(calls, "ctranslate2.Translator('nllb_ct2'") < first(calls, "model_cache.py mark")
