@@ -695,3 +695,60 @@ The two commits need different new strings, because each must be new to the memo
 The main gain is time.
 
 **Raw data:** `aws-results/tm-fixes/` (wall times, step timings, telemetry) and runs `ec2-20261018t132556z` … `ec2-20261018t143618z` in S3 and CloudWatch.
+
+## 15. Translation memory in S3 instead of RDS — runs `ec2-20261018t214617z`, `ec2-20261018t225738z` (2026-10-18/19)
+
+**Why:**
+- **Little use of the database:** since section 13, the memory is loaded once per language per run and then used from a dictionary, so the always-on RDS SQL Server (`db.t3.micro`, $0.029/h, about $21/month, plus about $2.30/month storage) is used for one bulk read per language and some writes.
+- **Extra cost elsewhere:** it also needs the ODBC driver in the image, a secret and a firewall rule.
+
+**What changed** (`translator/memory_store.py`, `TM_STORE=s3`, the default):
+- **Layout:** `memory/<engine key>/<lang>/base-<n>.jsonl.gz` plus `runs/<run>-<k>.jsonl.gz`, gzipped JSON lines; `engine.txt` names the full engine version.
+- **Concurrent runs:** each commit of a run writes its own file, so two runs at the same time cannot overwrite each other.
+- **Merging:** a load that finds 8 unmerged run files merges them into the next base.
+  - The new base is created only if absent (S3 `IfNoneMatch`), so of two runs merging at once one wins and the other carries on.
+  - Run files already in an older base are then removed.
+- **SQL kept as an option:** the SQL table is still available (`SqlMemory`, `TM_STORE=sql`) behind the same load/save/commit interface. Phase 2 skips database set-up in S3 mode and resets with `memory_store.py reset`.
+
+**Real check:** the same three commits as the SQL runs of section 14 (v1 with the memory emptied, then +1% v2-r1 and +5% v3-r1), same translation code, same ready runner, store changed only.
+
+| Commit | Store | To model | Memory hits | Twins | Kept English | Output files identical to SQL |
+|---|---|---:|---:|---:|---:|---:|
+| v1 | SQL | 23,650 | 0 | 365 | 0 | — |
+| v1 | S3, first version | 23,650 | 0 | 365 | 0 | 12 / 12 |
+| v1 | **S3, final** | 23,650 | 0 | 365 | 0 | **12 / 12** |
+| +1% | SQL | 240 | 24,000 | 0 | 117 | — |
+| +1% | S3, first version | 240 | 24,000 | 0 | 117 | 12 / 12 |
+| +1% | **S3, final** | 240 | 24,000 | 0 | 117 | **12 / 12** |
+| +5% | SQL | 1,144 | 24,000 | 59 | 117 | — |
+| +5% | S3, first version | 1,145 | 24,000 | 58 | 117 | 11 / 12 (one Marathi string) |
+| +5% | **S3, final** | 1,144 | 24,000 | 59 | 117 | **12 / 12** |
+
+0 failures in all 72 S3 files.
+
+**Flaw found by the first S3 run:** one Marathi string was reused as a near-twin with SQL but translated by the model with S3.
+- **Cause:** when several model translations share a template, the twin index kept the first entry it saw. SQL returned entries ordered by hash (an order SQL does not guarantee), and S3 by file.
+- **Fix:** entries are sorted by hash before indexing, so both stores choose the same twin source. This also removes a hidden order dependence from the SQL version.
+
+**Speed: S3 is slower per request than the database:**
+
+| Commit | SQL lookups | S3 first version | S3 final (parallel downloads) | Translation work SQL → S3 final |
+|---|---:|---:|---:|---:|
+| +1% | 0.21 s | 2.42 s | 1.37 s | 38.2 s → 40.1 s (+5%) |
+| +5% | 0.24 s | 2.22 s | 2.29 s | 127.4 s → 131.1 s (+3%) |
+
+- **Per-request latency:** each S3 request takes tens of milliseconds, against a few for the in-VPC database. Saving new entries also costs about 0.4–1.0 s per commit, against 0.03 s for SQL.
+- **Net effect:** about **2–4 s more per commit** (3–5% of translation work).
+- **Not yet done:** prefetching all languages' files at the start of a run, in parallel, would hide most of this.
+
+**What it buys:**
+- no always-on database (about **$23/month**) once RDS is removed;
+- no ODBC driver in the image (faster builds on a fresh machine, not yet measured);
+- no database secret or firewall rule;
+- S3 durability.
+
+These savings are realized only when the RDS instance and the ODBC driver are removed, which is not yet done; that removal is irreversible for the old SQL memory, which is only a cache.
+
+**Raw data:**
+- `aws-results/s3-memory/` and `aws-results/s3-memory-2/` (telemetry, step timings, outputs);
+- runs `ec2-20261018t214617z-*` and `ec2-20261018t225738z-*` in S3 and CloudWatch.
