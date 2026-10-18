@@ -1,7 +1,8 @@
 \section{Conclusion}
 \label{sec:conclusion}
 
-This semester moved the localization pipeline to AWS and reduced the work it does on every commit. Profiling showed that
+In the first half of this semester, the localization pipeline was moved to AWS and the work it does on every commit was
+reduced. Profiling showed that
 model inference takes 99.3\% of the translation stage. A one-change-at-a-time study then showed that the common intuition
 about batching, that less padding means more speed, does not hold here: padding fell from 30\% to 4\% for a 3\% gain,
 while the beam size and idle cores were the real costs. With beam~2, parallel batches and an output length cap, the
