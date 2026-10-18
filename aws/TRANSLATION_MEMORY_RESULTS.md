@@ -3,7 +3,7 @@
 **Project:** AWS localization pipeline (Track 3: CI/CD & Memory Optimization)
 **Semester task:** *"Build / update Translation Memory (TM) to reduce lookups"* (weeks 3–4), then *"benchmark the optimized pipeline to quantify token usage reduction, lookup speedups and final cost savings"* (weeks 5–7)
 **Experiment run:** `ec2-20261017t175415z`, 2026-10-17/18, AWS ap-south-1
-**Code:** branch `aws-migration`, commits `d66d640` → `4e90381`
+**Code:** branch `aws-migration`, commits `d66d640` → `4e90381`; second round of fixes `6cd6562` → `d8bb6b1` (section 10)
 
 ---
 
@@ -25,6 +25,8 @@ We then simulated real software releases on the KDE4 dataset, 12 languages. Thes
 | **10%** of the strings | 47 min (measured) | **5.5 min** | **8.4×** | **90.6%** | $0.078 → $0.009 |
 
 **Translation quality did not change:** chrF 63.38 with the memory against 63.37 without, and placeholders were kept 100% in both.
+
+**A second round of fixes** (section 10) then removed most of the remaining set-up time per CI run. Measured end to end, including starting the machine, a 5% commit went from **5.9 min to 3.1 min** (1.9× faster).
 
 ---
 
@@ -335,7 +337,7 @@ Three things put a floor under the new pipeline's time:
 2. **Strings kept in English are retried on every run.** About 117 strings per run (mostly Chinese) are ones the model can't write correctly (`<unk>`, see `BATCHING_RESULTS.md` section 12.2). We deliberately don't save them, so they go back to the model every time, although with the same engine the answer can't change. That's **a third of the model work** in the +1% runs (117 of 357 strings).
 3. **Tiny batches are less efficient.** With only ~30 new strings per language, the model's batches are small and poorly filled: 58–85% padding, against 16% when translating everything. So each string costs about **0.19 s instead of 0.10 s**.
 
-All three can be improved; see section 10.
+All three were then improved; see section 10.
 
 ### 8.3 Why reuse doesn't hurt quality
 
@@ -357,7 +359,86 @@ The first row is an estimate from the benchmark speed in `BATCHING_RESULTS.md` s
 
 ---
 
-## 10. Limitations and honest caveats
+## 10. Second round: removing the remaining bottlenecks
+
+### 10.1 Why a second round
+
+The experiment in section 6 ran every step **on one machine that stayed on**. That measured the memory fairly, but it hid a cost that real CI pays on **every commit**: starting a machine and preparing it.
+
+Timing one small commit end to end showed where the time really went:
+
+| Part of one CI run | Time | What was wrong |
+|---|---:|---|
+| Start a fresh machine, and shut it down afterwards | ~106 s | a brand-new machine boots and installs Docker for every commit |
+| Build the Docker image and set up the model | ~80 s | the image was built from scratch; the 629 MB model was also copied into the image every time, although it is never used from there; the model was downloaded and test-loaded every run |
+| Strings kept in English (`<unk>`) | ~23 s per small commit | never saved, so the same 117 strings went back to the model on every run, always with the same result |
+| Small commits | slower per string | ~30 new strings per language make **one** batch, so one of the machine's two engine workers sat idle |
+
+### 10.2 The four fixes
+
+1. **Keep the model out of the image build** (`.dockerignore`). The model is mounted when the translator runs, so copying it into the image was pure waste: about 15 s per build.
+2. **Remember "kept in English" strings.**
+   - These strings are saved with an empty translation and the engine label.
+   - With the same model and settings they are skipped instantly; with a new model or settings they are retried automatically.
+   - They are still listed in the log for a person to translate.
+3. **A ready runner.**
+   - Instead of a brand-new machine for every commit, one runner machine is kept **stopped** between runs and started when needed.
+   - Its disk keeps the built Docker image and the model, so a run skips the image build and the model download.
+   - It is stopped (not deleted) afterwards. A stopped machine costs only its disk: **$3.65 per month**.
+4. **Give both engine workers a batch.** When a model call is small, its strings are split into two balanced, length-sorted batches, one per worker, instead of one batch with a worker idle. Large calls are unchanged.
+
+### 10.3 Measured result: one 5% commit, before and after
+
+Both runs were timed from start to finish on my laptop, including starting the machine:
+- **Before:** the code before these fixes, on a fresh machine, as CI ran until now.
+- **After:** the current code, on the ready runner.
+
+| Part | Before | After | Saved |
+|---|---:|---:|---:|
+| Start + stop the machine | 106.1 s | 37.5 s | 68.6 s |
+| Image and model set-up | 79.5 s | 18.7 s | 60.8 s |
+| Translation work | 168.1 s | 127.2 s | 40.9 s |
+| Phase 1 + 3 | 2.9 s | 2.8 s | — |
+| **Whole run** | **356.6 s (5.9 min)** | **186.2 s (3.1 min)** | **1.9× faster** |
+| Strings sent to the model | 1,284 | 1,188 | 117 kept-English no longer retried |
+| Machine cost of the run | $0.0100 | $0.0052 | |
+
+Both runs translated all 12 language files with 0 failures.
+
+**Why two different commits:** each commit's new strings must be genuinely new to the memory, so the two runs used two different 5% versions (v3-r2 and v3-r3). With the old code, v3-r3 needed about 9% less translation work than v3-r2, so part of the "translation work" saving above comes from the files themselves. The next table compares the **same** files.
+
+### 10.4 Translation work on the same commits, before and after
+
+| Commit | Strings sent to model, before → after | Translation work, before → after |
+|---|---:|---:|
+| +1% (v2-r1) | 357 → 240 | 54.6 s → 38.2 s (**−30%**) |
+| +1% (v2-r2) | 345 → 228 | 55.6 s → 39.2 s (**−29%**) |
+| +1% (v2-r3) | 357 → 240 | 96.4 s → 74.5 s (**−23%**) |
+| +5% (v3-r1) | 1,261 → 1,144 | 155.5 s → 127.4 s (**−18%**) |
+| +5% (v3-r3) | 1,305 → 1,188 | 152.6 s → 127.2 s (**−17%**) |
+| +10% (v4-r1) | 2,446 → 2,329 | 287.5 s → 252.1 s (**−12%**) |
+
+### 10.5 What each fix contributed
+
+- **Ready runner + image fix:**
+  - starting and stopping the machine fell from about **106 s to 37–44 s**;
+  - image and model set-up fell from about **80 s to 19–36 s** (measured over 4 runs on the ready runner);
+  - together that's about **2 minutes saved on every CI run**, whatever the commit size. This was the biggest gain.
+- **Remembering kept-English strings:** exactly **117 fewer strings** sent to the model on every commit. All 117 were found in the memory instead. That's most of the saving on small commits.
+- **Balanced batches:** about **8–10% less time per translated string** on 5% and 10% commits, but **no gain on 1% commits**, where fixed per-file costs (reading and writing files, saving to the database) outweigh the model time.
+  - This was smaller than the ~40% I had estimated beforehand. Measuring corrected the estimate.
+
+### 10.6 Where a small commit stands now
+
+| Commit size | Measured with all fixes, end to end |
+|---|---:|
+| +1% (v2-r3) | 156.9 s (2.6 min) |
+| +5% (v3-r1, v3-r3) | 186.0 s, 186.2 s (3.1 min) |
+| +10% (v4-r1) | 312.2 s (5.2 min) |
+
+For comparison, the pipeline **before the translation memory work**, which wiped the memory and used a fresh machine, needed about **46 minutes** for the same 5% commit. That figure is the calculated translation time from section 7.2 plus the measured ~106 s machine start. Against that, the 5% commit is now about **15× faster**.
+
+## 11. Limitations and honest caveats
 
 - **The "before" times for +1% and +5% are calculated, not measured.** They come from the measured speed of the previous pipeline on v4, using a straight-line rule that the first-release step confirmed (0.1039 against 0.1046 s per string). The +10% comparison is fully measured.
 - **One machine type and one dataset.** Results are for an m5.large and KDE4-style short UI strings (median about 2 words). Longer text would change the absolute times, not the logic.
@@ -367,15 +448,15 @@ The first row is an estimate from the benchmark speed in `BATCHING_RESULTS.md` s
 
 ---
 
-## 11. What to do next
+## 12. What to do next
 
-1. **Remember "kept in English" strings per engine version.** That would stop about 117 pointless model calls per run here, a third of a small commit's model work. They would still be retried automatically when the model or settings change.
-2. **Cut start-up time.** Build the model into the container image, or keep a warm machine, so a small commit doesn't pay ~30 s to load the model.
+1. ~~Remember "kept in English" strings per engine version.~~ Done (section 10).
+2. ~~Cut start-up time.~~ Done with the ready runner (section 10).
 3. **Run at full size once** (all 10,054 KDE4 strings) with a 1% commit, to confirm the percentages for the paper at production scale.
 
 ---
 
-## 12. How to reproduce
+## 13. How to reproduce
 
 ```bash
 # 1. Build the app versions from the KDE4 spreadsheet and upload them
@@ -404,7 +485,7 @@ In `TM_STEPS`, `:reset` empties the memory before that step, and `:plain` also s
 
 ---
 
-## 13. Glossary
+## 14. Glossary
 
 | Term | Meaning |
 |---|---|

@@ -624,3 +624,74 @@ RUNNER_TASK=tm-experiment RUNNER_TIMEOUT_SECONDS=14400 TM_INPUT_PREFIX=s3://<dat
   TM_STEPS="v1:reset v2-r1 v3-r1 v4-r1 v2-r2 v3-r2 v4-r2 v2-r3 v3-r3 v4-r3 v4-cold=v4-r1:reset:plain" \
   bash aws/infra/run_on_ec2.sh
 ```
+
+## 14. Remaining bottlenecks: four fixes — runs `ec2-20261018t13…`–`t143618z` (2026-10-18)
+
+**Flaws found** by timing a small commit end to end (section 13 ran all steps on one machine, so its step times left out the per-commit machine start):
+
+| Part of a CI run | Time | Problem |
+|---|---:|---|
+| Start a fresh EC2 machine, then stop it | ~106 s | a new machine boots and installs Docker for every commit |
+| Docker image build + model set-up | ~80 s | a fresh machine builds the image from scratch. The 629 MB model sat in the build folder, so every build also copied it in (5 s transfer + 8.6 s COPY + 2.6 s export). The model was downloaded and test-loaded every run. |
+| Strings kept in English (`<unk>`) | ~23 s (+1% commit) | never saved, so all 117 went back to the model every run, with the same result |
+| Small commits | 0.15–0.27 s per string, against 0.10 | ~30 new strings per language made one batch, so one of the two engine workers was idle |
+
+**Fixes:**
+1. **`translator/.dockerignore`** keeps the model folder out of the image build (it is mounted at run time).
+2. **Kept-English strings remembered** per engine version: an empty translation saved as `nllb-600M-ct2+english`. Later runs skip the model and still list them. A new engine version retries them.
+3. **Ready runner** (`run_on_ec2.sh`, `RUNNER_REUSE=true` by default):
+   - one runner tagged `cloud-loc-runner=ready` is kept **stopped** between runs, so its disk keeps the built image and the model, and it is started for each run;
+   - shutdown behaviour is *stop*, and the workspace is unpacked fresh while the model is kept;
+   - a model already on the machine for the current `MODEL_KEY` skips the download and test load (`model_cache.py present/mark`);
+   - `teardown.sh` terminates ready runners;
+   - a runner still *stopping* from the previous run is waited for (bug found in the first measurement series, `d8bb6b1`).
+4. **`plan_balanced`:** a model call small enough for two batches is split into two equal-token, length-sorted batches, one per engine worker. Large calls are unchanged.
+
+**Measured: one +5% commit, end to end from the laptop** (launch → result), same day, same machine type:
+
+| Part | Before: pre-fix code `4e90381`, fresh machine (`ec2-20261018t143022z`, v3-r2) | After: current code, ready runner (`ec2-20261018t143618z`, v3-r3) | Saved |
+|---|---:|---:|---:|
+| Machine start + stop | 106.1 s | 37.5 s | 68.6 s |
+| Image + model set-up | 79.5 s | 18.7 s | 60.8 s |
+| Translation work | 168.1 s | 127.2 s | 40.9 s |
+| Phase 1 + 3 | 2.9 s | 2.8 s | — |
+| **Total** | **356.6 s (5.9 min)** | **186.2 s (3.1 min)** | **1.9× faster** |
+| Strings sent to the model | 1,284 (incl. 117 kept-English retries) | 1,188 | |
+| Model tokens in + out | 13,957 | 12,233 | |
+| Failures | 0 of 12 files | 0 of 12 files | |
+
+The two commits need different new strings, because each must be new to the memory. v3-r3 is somewhat lighter than v3-r2: with the old code they took 152.6 s and 168.0 s of work (section 13). The matched comparison of translation work below removes that difference.
+
+**Translation work on the same files, pre-fix code (section 13) vs current code:**
+
+| Commit file | Sent to model before → after | Work before → after |
+|---|---:|---:|
+| v2-r1 (+1%) | 357 → 240 | 54.6 s → 38.2 s (−30%) |
+| v2-r2 (+1%) | 345 → 228 | 55.6 s → 39.2 s (−29%) |
+| v2-r3 (+1%) | 357 → 240 | 96.4 s → 74.5 s (−23%) |
+| v3-r1 (+5%) | 1,261 → 1,144 | 155.5 s → 127.4 s (−18%) |
+| v3-r3 (+5%) | 1,305 → 1,188 | 152.6 s → 127.2 s (−17%) |
+| v4-r1 (+10%) | 2,446 → 2,329 | 287.5 s → 252.1 s (−12%) |
+
+**Per fix:**
+- **Fix 2:** exactly 117 fewer model strings per commit, and all 117 were found in the memory (`tm_kept_english` = 117).
+- **Fix 4:**
+  - time per model string fell about 10% on +5% commits (0.123 → 0.111 s) and 8% on +10% (0.118 → 0.108 s);
+  - **no gain on +1% commits** (0.153 → 0.159 s), where per-file fixed costs dominate;
+  - smaller than predicted (~40%).
+- **Fixes 1 + 3:**
+  - machine start + stop: 102–108 s on new machines, **37–44 s** on the ready runner (4 runs);
+  - set-up: 77–80 s on new machines, **18.5–36 s** on the ready runner.
+
+**Other measured commits with all fixes, ready runner, end to end:**
+- +1% (v2-r3, its longer strings): **156.9 s**;
+- +5% (v3-r1): **186.0 s**;
+- +10% (v4-r1): **312.2 s**.
+
+**Cost:**
+- the +5% commit: $0.0100 → **$0.0052** of machine time (m5.large $0.101/h);
+- the stopped ready runner's 40 GB gp3 disk: **$3.65/month** ($0.0912/GB-month, AWS price list) whether used or not.
+
+The main gain is time.
+
+**Raw data:** `aws-results/tm-fixes/` (wall times, step timings, telemetry) and runs `ec2-20261018t132556z` … `ec2-20261018t143618z` in S3 and CloudWatch.
