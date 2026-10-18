@@ -241,7 +241,9 @@ def load_memory(store, target_lang):
     profiler.counters["sql_reads"] += 1
     file_extra["tm_db_queries"] += 1
     known, index = {}, twins.setdefault(target_lang, {})
-    for key, source, translation, model_name in store.load(target_lang):
+    # Sorted by hash: when several model translations share a template, the twin source must not depend on
+    # the order the store happens to return entries in (SQL by key, S3 by file).
+    for key, source, translation, model_name in sorted(store.load(target_lang)):
         known[key] = translation
         if model_name == MODEL_NAME and translation:   # adapt only from model translations, never from adapted ones
             index.setdefault(template_of(source), (source, translation))

@@ -19,10 +19,12 @@ import os
 import re
 import sys
 from collections import namedtuple
+from concurrent.futures import ThreadPoolExecutor
 
 from botocore.exceptions import ClientError
 
-COMPACT_AFTER = 20
+COMPACT_AFTER = 8           # unmerged run files that trigger a merge (each is one more request per load)
+DOWNLOAD_THREADS = 8        # a language's files are fetched in parallel: one S3 round trip instead of one per file
 Entry = namedtuple("Entry", "key lang source translation model")
 BASE = re.compile(r"base-(\d{6})\.jsonl\.gz$")
 
@@ -61,7 +63,7 @@ class S3Memory:
         self._engine_named = False
 
     def _get(self, key):
-        self.reads += 1
+        self.reads += 1          # an int increment is atomic enough for a request counter
         return self.client.get_object(Bucket=self.bucket, Key=key)["Body"].read()
 
     def load(self, lang):
@@ -71,16 +73,23 @@ class S3Memory:
         bases = sorted((int(m.group(1)), k) for k in keys if (m := BASE.search(k)))
         runs = sorted(k for k in keys if k.startswith(folder + "runs/"))
 
-        entries, merged, base_number = {}, set(), 0
-        if bases:
-            base_number, base_key = bases[-1]
-            header, *records = decode_lines(self._get(base_key))
+        # The base names the run files it already contains; run files are read only if they are not in it.
+        # The base and every run file are fetched together, then applied in order (later files win).
+        base_key = bases[-1][1] if bases else None
+        base_number = bases[-1][0] if bases else 0
+        with ThreadPoolExecutor(max_workers=DOWNLOAD_THREADS) as pool:
+            bodies = dict(zip([base_key, *runs] if base_key else runs,
+                              pool.map(self._get, [base_key, *runs] if base_key else runs)))
+
+        entries, merged = {}, set()
+        if base_key:
+            header, *records = decode_lines(bodies[base_key])
             merged = set(header.get("merged_runs", []))
             for r in records:
                 entries[r["hash"]] = r
         unmerged = [k for k in runs if k.rsplit("/", 1)[1] not in merged]
         for key in unmerged:
-            for r in decode_lines(self._get(key)):
+            for r in decode_lines(bodies[key]):
                 entries[r["hash"]] = r
 
         if len(unmerged) >= COMPACT_AFTER:

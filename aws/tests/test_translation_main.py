@@ -647,3 +647,28 @@ def test_s3_memory_needs_no_database(translation, run_env, s3, monkeypatch):
 
 def as_rows(rows):
     return {source: translation for _, source, translation, _ in rows}
+
+
+class ListMemory:
+    """A memory store that returns its entries in a given order."""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    def load(self, target_lang):
+        return list(self.rows)
+
+
+def test_twin_source_does_not_depend_on_the_order_the_store_returns_entries(translation):
+    # SQL happened to return entries sorted by hash and S3 in file order; the twin source must be the same.
+    rows = [(translation.tm_key(s), s, t, translation.MODEL_NAME) for s, t in (("20 Cards", "20 Karten"), ("8 Cards", "8 Karten"))]
+
+    chosen = []
+    for order in (rows, rows[::-1]):
+        translation.memory.clear()
+        translation.twins.clear()
+        translation.reset_file_extra()
+        translation.load_memory(ListMemory(order), "de-DE")
+        chosen.append(translation.twins["de-DE"][translation.template_of("5 Cards")])
+
+    assert chosen[0] == chosen[1]
