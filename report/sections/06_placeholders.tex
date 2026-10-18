@@ -1,0 +1,73 @@
+\section{Placeholder Protection}
+\label{sec:placeholders}
+
+Software strings contain placeholders that the program fills in at run time, such as \code{\%1}, \code{\%s},
+\code{\{name\}} or \code{<b>}. A translation that drops or alters a placeholder is not merely a lower-quality translation:
+it produces a broken message in the released software.
+
+\subsection{The Problem}
+In the KDE4 beam study, about \textbf{12\% of strings with placeholders} came back with a placeholder missing or changed,
+at every beam size (88.0\% kept at beam~5, 87.7\% at beam~2). The model treats \code{\%1} as ordinary text and sometimes
+translates, moves or drops it. Because beam size barely affected the problem, it needed its own fix.
+
+\subsection{Method}
+Before translation, each placeholder is replaced by a numbered marker; after translation the markers are replaced by the
+original placeholders. The restore step accepts what the model does to a marker in practice (full-width brackets in
+Chinese and Japanese, spaces inside the marker, digits written in the target script) and reports whether every marker
+came back exactly once. If not, the string is translated again without markers and that result is used (the
+\emph{fallback}). Three marker styles were compared on all 355 KDE4 placeholder strings in 12 languages (4,260
+translations per style, beam~2):
+
+\begin{center}
+\small
+\begin{tabular}{@{}l l@{}}
+\code{Could not find conduit \%1.} & original \\
+\code{Could not find conduit [0].} & square \\
+\code{Could not find conduit \S0\S.} & section \\
+\code{Could not find conduit \{0\}.} & curly \\
+\end{tabular}
+\end{center}
+
+\subsection{Results}
+\begin{table}[H]
+\centering
+\caption[Placeholder survival by marker style]{Placeholder survival by marker style (run \code{ec2-20261016t195057z}, 4,260 translations per style).}
+\label{tab:phstyles}
+\begin{tabular}{@{}l S[table-format=2.2] S[table-format=2.2] S[table-format=2.2] S[table-format=3.1]@{}}
+\toprule
+\textbf{Style} & {\textbf{Kept (\%)}} & {\textbf{Kept with fallback (\%)}} & {\textbf{Fallback used (\%)}} & {\textbf{Time (s)}} \\
+\midrule
+None (before) & 87.70 & {--} & {--} & 649.3 \\
+\textbf{Square} \code{[0]} & \bfseries 99.15 & \bfseries 99.88 & 0.85 & 716.1 \\
+Section \code{\S0\S} & 80.66 & 97.91 & 19.34 & 749.5 \\
+Curly \code{\{0\}} & 88.78 & 97.37 & 11.22 & 747.8 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[reportbars, width=\linewidth, height=5.6cm, bar width=9pt,
+  symbolic x coords={hi,ar,bn,de,es,fr,ja,mr,pa,ta,te,zh}, xtick=data,
+  ylabel={Placeholders kept (\%)}, ymin=75, ymax=101.5, enlarge x limits=0.05]
+\addplot[fill=cprev!75, draw=cprev] coordinates {(hi,90.1) (ar,89.9) (bn,82.0) (de,90.1) (es,88.5) (fr,85.9) (ja,86.8) (mr,88.7) (pa,88.2) (ta,92.1) (te,90.7) (zh,79.4)};
+\addplot[fill=cnew!80, draw=cnew] coordinates {(hi,100) (ar,98.3) (bn,100) (de,97.5) (es,99.2) (fr,96.9) (ja,99.7) (mr,99.7) (pa,99.7) (ta,100) (te,100) (zh,98.9)};
+\legend{No protection, Square markers (before fallback)}
+\end{axis}
+\end{tikzpicture}
+\caption[Placeholders kept per language]{Placeholders kept per language, without protection and with square markers.
+Chinese improves the most (79.4\% to 98.9\%).}
+\label{fig:placeholders}
+\end{figure}
+
+\paragraph{Finding.} Square markers raise placeholder survival from \textbf{87.7\% to 99.15\%}, and to \textbf{99.88\%}
+with the fallback: 5 broken strings out of 4,260 instead of about 524. Every language reaches at least 96.9\% before the
+fallback. The square style works because NLLB saw many citation markers such as \code{[1]} during training and copies
+them unchanged; it often rewrites the other two styles. The cost is about 10\% more time on strings with placeholders,
+which are 3.5\% of KDE4, so the overall effect is negligible. Square markers with the fallback were adopted.
+
+\paragraph{Note on chrF.} On these 355 strings, chrF against the references fell by about two points (61.79 to 59.76 with
+fallback). The likely cause is that the references themselves drop \code{\%N} placeholders in 5--25\% of rows, so a
+translation that correctly keeps them matches those references less closely. Strings without placeholders are not
+affected by protection.

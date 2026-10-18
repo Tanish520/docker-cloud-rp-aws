@@ -1,0 +1,35 @@
+\section{Cost and Reliability}
+\label{sec:cost}
+
+\subsection{Cost}
+All costs below are machine time at the on-demand price of an m5.large in \code{ap-south-1} (\$0.101 per hour). The
+database and storage cost the same regardless of the pipeline version and are not included.
+
+\begin{table}[H]
+\centering
+\caption[Machine cost per run]{Machine cost per run.}
+\label{tab:cost}
+\begin{tabularx}{\linewidth}{@{}L r r@{}}
+\toprule
+\textbf{Run} & \textbf{Machine time} & \textbf{Cost} \\
+\midrule
+Full KDE4 corpus, 12 languages (120,648 translations) & 3 h 38 min & \$0.367 \\
+\quad per 1,000 translations & & \$0.0030 \\
+5\% commit, previous pipeline (memory emptied, calculated) & $\approx$46 min & $\approx$\$0.075 \\
+5\% commit, new memory, fresh machine (measured) & 5.9 min & \$0.0100 \\
+5\% commit, all fixes, ready runner (measured) & 3.1 min & \$0.0052 \\
+Ready runner disk while stopped (40 GB gp3) & -- & \$3.65 per month \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Per run the amounts are small, but a CI pipeline runs on every commit, often many times a day and for many applications
+and languages, so a 93\% saving per commit compounds. The larger benefit is time: developers receive localized resources
+in about three minutes instead of most of an hour.
+
+\subsection{Reliability}
+Every recorded run in this report completed without translation failures: 12 of 12 files in the full KDE4 run, 24 of 24
+in the check run, 132 of 132 in the memory experiment, and 12 of 12 in each end-to-end commit. Phase~2 also treats any
+swallowed inference error, missing segments or storage error as a failed file instead of a silent success, isolates
+failures per file so that one bad file does not stop the others, and keeps unprocessed files in S3 for a retry. The
+code is covered by an automated test suite of 254 tests.

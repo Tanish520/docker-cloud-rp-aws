@@ -1,0 +1,115 @@
+\section{Translation Memory Redesign}
+\label{sec:tmdesign}
+
+A Translation Memory (TM) is a store of translations the pipeline has already made. Before sending a string to the model,
+the pipeline looks it up; a \emph{hit} is reused instantly, and a \emph{miss} is translated and saved for next time. The
+previous semester's memory worked, and measured a seeded 0\% versus 50\% cache. This chapter rebuilds it for the way the
+pipeline is actually used: on every commit of an evolving application.
+
+\subsection{Problems with the Previous Memory}
+\begin{table}[H]
+\centering
+\caption[Problems of the previous memory]{Problems of the previous Translation Memory.}
+\label{tab:tmflaws}
+\begin{tabularx}{\linewidth}{@{}l L@{}}
+\toprule
+\textbf{Problem} & \textbf{Consequence} \\
+\midrule
+Emptied before every run & each commit retranslated the whole application, although a commit changes only a few strings \\
+No check of which model made an entry & after a model or setting change, older translations would still be reused \\
+One query per 1,000 strings per file & every file asked the database again for its own strings \\
+Exact matches only & ``8 Cards'' could not reuse ``20 Cards''; 526 KDE4 strings (5.2\%) have such a near-twin \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Design}
+\paragraph{Persistent, engine-labelled memory.} The memory is kept between runs. Each entry records its \emph{engine
+version}: the model and every setting that changes the output (beam size, length cap, placeholder style, handling of
+\code{<unk>}). Lookups match the current engine version, so a change of model or settings automatically stops older entries
+from being reused, without deleting anything. The table key is (language, engine version, text hash), with the language
+first so that one language's entries are stored together.
+
+\paragraph{One load per language per run.} At the first file of a language, the pipeline loads that language's entries
+for the current engine in a single query and keeps them in memory. Every later check is an in-process dictionary lookup,
+and translations made during the run are added as they are saved, so later files reuse them without another query.
+
+\paragraph{Near-twin reuse.} When the exact text is not found, the pipeline looks for a saved \emph{model} translation of a
+string that differs only in numbers, placeholders or trailing punctuation, and adapts it:
+
+\begin{center}
+\small
+\begin{tabular}{@{}l l l@{}}
+\toprule
+\textbf{Saved} & \textbf{New string} & \textbf{Adapted translation} \\
+\midrule
+\code{20 Cards} $\rightarrow$ \code{20 Karten} & \code{8 Cards} & \code{8 Karten} \\
+\code{Copy \%1 to \%2} $\rightarrow$ \code{Nach \%2 kopieren: \%1} & \code{Copy \%3 to \%4} & \code{Nach \%4 kopieren: \%3} \\
+\code{Border} $\rightarrow$ \code{Rahmen} & \code{Border:} & \code{Rahmen:} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Reuse is refused, and the string goes to the model as usual, whenever it cannot be done cleanly: a value does not appear
+exactly once in the saved translation (for example, the model wrote the number in local digits), the English repeats a
+value (``1 of 1''), or the saved entry was itself adapted. Twins inside one file are sent to the model once and the rest
+are adapted from that translation.
+
+\subsection{Quality Check of Near-Twin Reuse}
+Reuse only helps if adapted translations are as good as the model's own. Before enabling it, every twin pair in the full
+KDE4 set (440 groups, 968 strings, 528 reusable pairs) was translated in all twelve languages both ways: freshly by the
+production model and settings, and adapted from its twin. Both were scored against the references.
+
+A first version \emph{guessed} how each language writes trailing punctuation and scored lower than fresh translation for
+Japanese. Counting the endings of every KDE4 reference showed that only Chinese consistently uses the full-width colon,
+that Japanese uses the ASCII colon slightly more often (749 to 657), that ``\ldots'' is kept in every language, and that
+Hindi, Bengali and Punjabi end sentences with the danda while Marathi keeps the full stop. The
+punctuation rules now follow these counts. Table~\ref{tab:twins} reports the final rules.
+
+\begin{table}[H]
+\centering
+\caption[Near-twin reuse against fresh translation]{Near-twin reuse against fresh model translation (chrF on the reused strings, all 528 pairs per language).}
+\label{tab:twins}
+\begin{tabular}{@{}l S[table-format=3.0] S[table-format=2.0] S[table-format=2.2] S[table-format=2.2]@{}}
+\toprule
+\textbf{Language} & {\textbf{Reused}} & {\textbf{Refused}} & {\textbf{chrF fresh}} & {\textbf{chrF reused}} \\
+\midrule
+Hindi & 506 & 22 & 67.12 & 70.62 \\
+Arabic & 488 & 40 & 55.51 & 56.08 \\
+Bengali & 454 & 74 & 64.10 & 65.34 \\
+German & 526 & 2 & 66.12 & 66.83 \\
+Spanish & 527 & 1 & 66.82 & 68.04 \\
+French & 510 & 18 & 67.54 & 68.74 \\
+Japanese & 525 & 3 & 50.62 & 51.14 \\
+Marathi & 492 & 36 & 57.62 & 59.55 \\
+Punjabi & 527 & 1 & 60.24 & 62.60 \\
+Tamil & 526 & 2 & 66.62 & 68.28 \\
+Telugu & 526 & 2 & 66.98 & 70.50 \\
+Chinese & 477 & 51 & 33.78 & 43.82 \\
+\midrule
+\textbf{Mean of 12} & & & \bfseries 60.26 & \bfseries 62.63 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[reportbars, width=\linewidth, height=5.4cm, bar width=9pt,
+  symbolic x coords={hi,ar,bn,de,es,fr,ja,mr,pa,ta,te,zh}, xtick=data,
+  ylabel={chrF}, ymin=25, ymax=78, enlarge x limits=0.05]
+\addplot[fill=cprev!75, draw=cprev] coordinates {(hi,67.12) (ar,55.51) (bn,64.10) (de,66.12) (es,66.82) (fr,67.54) (ja,50.62) (mr,57.62) (pa,60.24) (ta,66.62) (te,66.98) (zh,33.78)};
+\addplot[fill=cnew!80, draw=cnew] coordinates {(hi,70.62) (ar,56.08) (bn,65.34) (de,66.83) (es,68.04) (fr,68.74) (ja,51.14) (mr,59.55) (pa,62.60) (ta,68.28) (te,70.50) (zh,43.82)};
+\legend{Fresh model translation, Adapted from a twin}
+\end{axis}
+\end{tikzpicture}
+\caption[Near-twin reuse per language]{Near-twin reuse scores at least as well as fresh translation in every language.}
+\label{fig:twins}
+\end{figure}
+
+\paragraph{Finding.} Adapted translations score \textbf{equal or higher in all twelve languages} (mean 62.63 against
+60.26), with placeholders kept 100\% in both. Reuse can score higher because the model translates each string in
+isolation and is sometimes inconsistent: it may translate ``Points'' well in ``42 Points'' but poorly in ``78 Points''.
+Reuse applies the same translation to every twin, which also makes the localized application more consistent. Refusals
+(8\%) were mostly strings whose numbers the model wrote in local digits; those strings were simply translated as before.
+Near-twin reuse is enabled by default.

@@ -1,0 +1,55 @@
+\section{Quality Problems Found at Scale}
+\label{sec:quality}
+
+Translating the full corpus revealed two problems that the smaller tests could not show.
+
+\subsection{Characters the Model Cannot Write}
+Four strings in the full run came back \emph{empty}: \code{thistle} (Japanese) and \code{Candle}, \code{crab} and
+\code{goy Y} (Chinese). Reproducing them with the same model showed the cause: for these strings the model's best output is
+the \code{<unk>} (unknown) token, and decoding removes special tokens, leaving nothing. The behaviour is the same at beam~5
+and unrelated to batching.
+
+Re-translating the whole Chinese and Japanese sets showed that the empty strings were only the visible part. \textbf{614 of
+10,054 Chinese outputs (6.1\%)} and 8 Japanese outputs contained \code{<unk>}. In most of them a character was silently
+deleted and the meaning changed: ``New Folder'' became ``new file'', ``Dolphin
+Toolbar'' became ``fish tool'', and ``Bitrate'' became just ``rate''.
+
+\subsection{Options Measured}
+Three ways of handling these strings were scored against the references on exactly the affected strings
+(Table~\ref{tab:unk}).
+
+\begin{table}[H]
+\centering
+\caption[Handling of \code{<unk>} outputs]{Handling of outputs that contain \code{<unk>} (chrF on the affected strings).}
+\label{tab:unk}
+\begin{tabularx}{\linewidth}{@{}l S[table-format=2.2] S[table-format=2.2] L@{}}
+\toprule
+\textbf{Option} & {\textbf{zh (614)}} & {\textbf{ja (8)}} & \textbf{Behaviour} \\
+\midrule
+Keep the model's text & 26.20 & 6.61 & characters silently missing; meaning often wrong \\
+Forbid \code{<unk>} and retry & 25.97 & 33.18 & fixes some; others become ``??'' or a wrong word (``Tunnels'' $\rightarrow$ ``Tunisia'', ``thistle'' $\rightarrow$ ``carbohydrate'') \\
+\textbf{Keep the English and report it} & 7.70 & 31.71 & never a wrong word; listed in the log for a translator \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\paragraph{Decision.} The pipeline keeps such strings in English and reports them. In localized software, a visibly
+untranslated string can be found and fixed; a wrong word cannot. The cost is a lower measured chrF for Chinese, since
+chrF counts English as untranslated. Translation Memory entries for these strings are handled in
+Chapter~\ref{sec:tmdesign}.
+
+\subsection{Long Strings and the Translation Memory}
+The Translation Memory used the English text itself as its database key. SQL Server limits a key to 900 bytes, which
+allows at most 434 characters, while KDE4 contains strings of up to 660 characters; saving such a string failed. The key
+is now a fixed-size \textbf{SHA-256 hash} of the text, and the text is stored in an unlimited column, so strings of any
+length are saved and found again.
+
+\subsection{Verification}
+A check run (\code{ec2-20261017t063722z}) translated 383 KDE4 strings (the three longest, 25 known \code{<unk>} cases and
+all 355 placeholder strings) in 12 languages, twice, as two identical files. All 24 files succeeded. The second copy was
+served \textbf{100\% from the memory} in ten languages, including the long strings; the only misses were the Chinese and
+Japanese strings kept in English, which were all listed in the log. Placeholder survival matched Chapter~\ref{sec:placeholders}.
+
+\keyresult{\textbf{RQ4.} At scale, 6.1\% of Chinese outputs silently lost characters the model cannot write, and strings
+over 434 characters could not be stored in the memory. Affected strings are now kept in English and reported, and the
+memory is keyed by a hash so that strings of any length fit.}

@@ -1,0 +1,154 @@
+\section{Translation Memory Experiment: Simulated CI/CD Commits}
+\label{sec:tmexp}
+
+\subsection{Design}
+A Translation Memory pays off only \emph{across} runs, when the same application is translated again after a change. The
+experiment therefore reproduces a commit history (Table~\ref{tab:versions}): a first release, then commits that add 1\%,
+5\% and 10\% new strings. Each commit size was run three times (r1--r3), and every commit's new strings are used in no
+other version, so the memory has genuinely never seen them. The new strings are real KDE4 strings held back from the
+first release, so they have reference translations.
+
+\begin{table}[H]
+\centering
+\caption[Application versions]{Application versions used in the experiment (12 languages each).}
+\label{tab:versions}
+\begin{tabular}{@{}l l S[table-format=5.0]@{}}
+\toprule
+\textbf{Version} & \textbf{Content} & {\textbf{Translations}} \\
+\midrule
+v1 & 2,000 random KDE4 strings (first release) & 24000 \\
+v2 & v1 + 20 new strings (1\% commit) & 24240 \\
+v3 & v1 + 100 new strings (5\% commit) & 25200 \\
+v4 & v1 + 200 new strings (10\% commit) & 26400 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+All steps ran in sequence on one m5.large, keeping the memory between steps as a CI server would (run
+\code{ec2-20261017t175415z}). As the comparison point, the final step re-ran v4 with the memory emptied and near-twin
+reuse switched off, which is the pipeline as it was before this work. The previous pipeline's time for v2 and v3 was
+calculated from that step's measured rate (0.1046~s per translation). This is justified because, with nothing reused, time
+grows linearly with the number of translations: the first release, which also reused nothing, ran at 0.1039~s.
+
+A 2,000-string application was used instead of all 10,054 strings to keep the experiment to about two and a half hours
+and to allow three repeats. The savings are proportions, so they do not depend on application size, and full-scale speed
+is known from Chapter~\ref{sec:kde4run}.
+
+\subsection{Results per Step}
+\begin{table}[H]
+\centering
+\caption[Every step of the memory experiment]{Every step of the experiment. ``Work'' is time spent translating the files;
+``Step'' adds about 30~s of fixed start-up per run (image check, model download and load).}
+\label{tab:tmsteps}
+\small\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}l S[table-format=5.0] S[table-format=5.0] S[table-format=3.0] S[table-format=5.0] S[table-format=4.1] S[table-format=4.1] S[table-format=6.0]@{}}
+\toprule
+\textbf{Step} & {\textbf{Translations}} & {\textbf{Memory hits}} & {\textbf{Twins}} & {\textbf{To model}} & {\textbf{Work (s)}} & {\textbf{Step (s)}} & {\textbf{Model tokens}} \\
+\midrule
+v1 (empty memory) & 24000 & 0 & 365 & 23650 & 2492.7 & 2578.9 & 261431 \\
+v2-r1 (+1\%) & 24240 & 23883 & 0 & 357 & 54.6 & 93.4 & 3972 \\
+v3-r1 (+5\%) & 25200 & 23883 & 59 & 1261 & 155.5 & 186.9 & 13706 \\
+v4-r1 (+10\%) & 26400 & 23883 & 71 & 2446 & 287.5 & 319.4 & 26468 \\
+v2-r2 & 24240 & 23883 & 12 & 345 & 55.6 & 86.9 & 4051 \\
+v3-r2 & 25200 & 23883 & 33 & 1284 & 168.0 & 199.4 & 13957 \\
+v4-r2 & 26400 & 23883 & 81 & 2436 & 316.7 & 348.4 & 27646 \\
+v2-r3 & 24240 & 23883 & 0 & 357 & 96.4 & 127.8 & 4816 \\
+v3-r3 & 25200 & 23883 & 12 & 1305 & 152.6 & 184.0 & 13664 \\
+v4-r3 & 26400 & 23883 & 59 & 2458 & 295.0 & 327.3 & 27746 \\
+\midrule
+v4, previous pipeline & 26400 & 0 & 0 & 26415 & 2761.1 & 2794.2 & 290622 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+All 132 language files succeeded. The 117 misses among the unchanged strings in each later step are the Chinese and
+Japanese strings kept in English (Chapter~\ref{sec:quality}), which were not yet remembered at this stage
+(Chapter~\ref{sec:bottlenecks}).
+
+\subsection{New Pipeline against the Previous Pipeline}
+\begin{table}[H]
+\centering
+\caption[New pipeline against the previous pipeline]{Averages of three repeats against the previous pipeline.
+Previous-pipeline values for +1\% and +5\% are calculated from its measured rate; +10\% is measured. Cost uses \$0.101 per
+machine-hour.}
+\label{tab:tmheadline}
+\small\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{@{}l S[table-format=4.0] S[table-format=3.1] S[table-format=2.1] S[table-format=6.0] S[table-format=5.0] S[table-format=2.1] c@{}}
+\toprule
+\textbf{Commit} & {\textbf{Previous (s)}} & {\textbf{New (s)}} & {\textbf{Speed-up}} & {\textbf{Tokens, prev.}} & {\textbf{Tokens, new}} & {\textbf{Saved (\%)}} & \textbf{Cost per run} \\
+\midrule
++1\% & 2568 & 102.7 & 25.0 & 266844 & 4280 & 98.4 & \$0.072 $\rightarrow$ \$0.0029 \\
++5\% & 2669 & 190.1 & 14.0 & 277412 & 13776 & 95.0 & \$0.075 $\rightarrow$ \$0.0053 \\
++10\% & 2794 & 331.7 & 8.4 & 290622 & 27287 & 90.6 & \$0.078 $\rightarrow$ \$0.0093 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}[t]{0.48\linewidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[reportbars, width=\linewidth, height=5.6cm, bar width=13pt,
+  symbolic x coords={+1\%,+5\%,+10\%}, xtick=data, ymode=log, log origin=infty,
+  ymin=50, ymax=6000, ylabel={Time per run (s, log scale)},
+  nodes near coords, point meta=rawy, nodes near coords style={font=\scriptsize}, enlarge x limits=0.25,
+  legend style={at={(0.5,-0.2)}}]
+\addplot[fill=cprev!75, draw=cprev] coordinates {(+1\%,2568) (+5\%,2669) (+10\%,2794)};
+\addplot[fill=cnew!80, draw=cnew] coordinates {(+1\%,102.7) (+5\%,190.1) (+10\%,331.7)};
+\legend{Previous, New}
+\end{axis}
+\end{tikzpicture}
+\caption{Time per run}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.48\linewidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[reportbars, width=\linewidth, height=5.6cm, bar width=13pt,
+  symbolic x coords={+1\%,+5\%,+10\%}, xtick=data, ymode=log, log origin=infty,
+  ymin=1000, ymax=1000000, ylabel={Model tokens (log scale)},
+  enlarge x limits=0.25, legend style={at={(0.5,-0.2)}}]
+\addplot[fill=cprev!75, draw=cprev] coordinates {(+1\%,266844) (+5\%,277412) (+10\%,290622)};
+\addplot[fill=cnew!80, draw=cnew] coordinates {(+1\%,4280) (+5\%,13776) (+10\%,27287)};
+\legend{Previous, New}
+\end{axis}
+\end{tikzpicture}
+\caption{Model tokens per run}
+\end{subfigure}
+\caption[Time and model tokens per commit]{The previous pipeline's cost is fixed by application size; the new pipeline's
+cost follows the size of the change.}
+\label{fig:tmcommits}
+\end{figure}
+
+\paragraph{Why smaller commits gain more.} The previous pipeline retranslated everything, so its time was about 45 minutes
+whatever changed. The new pipeline's time follows the size of the change, so the ratio is largest for small commits, which
+are the common case in CI/CD. A 1\% commit did not reach the ideal 100\x{} for three reasons, each addressed in
+Chapter~\ref{sec:bottlenecks}: a fixed start-up of about 30~s per run; the 117 kept-English strings, which were sent to the
+model again on every run (a third of a 1\% commit's model work); and small batches, which used the model less efficiently
+(58--85\% padding against 16\% when translating everything).
+
+\subsection{Quality, Lookups and Near-Twins}
+\begin{table}[H]
+\centering
+\caption[Quality, lookups and near-twins]{Quality, database lookups and near-twin reuse.}
+\label{tab:tmquality}
+\begin{tabularx}{\linewidth}{@{}l L@{}}
+\toprule
+\textbf{Measure} & \textbf{Result} \\
+\midrule
+Quality, v4 from the memory & chrF \textbf{63.38}, placeholders kept 100\%, 0 missing \\
+Quality, v4 previous pipeline & chrF \textbf{63.37}, placeholders kept 100\%, 0 missing \\
+Database queries per run & \textbf{12} (one per language) against 36 for the previous per-file, per-1,000-string queries \\
+Time to load the memory & 224--272~ms in total for all 12 languages; every later check is in-process \\
+Near-twins in the first release & 365 of 24,000 translations (1.5\%) reused instead of translated \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Quality is unchanged because a memory hit returns exactly the translation that the same engine produced earlier, which the
+engine label guarantees. Near-twins were rarer in the 2,000-string application (1.5\%) than in the full corpus (5.2\%),
+because a twin helps only when its partner is also present.
+
+\keyresult{\textbf{RQ5.} Under simulated CI/CD commits, the redesigned memory made 1\%, 5\% and 10\% commits 25\x{},
+14\x{} and 8.4\x{} faster than the previous pipeline, with 98.4\%, 95.0\% and 90.6\% fewer model tokens and unchanged
+quality (chrF 63.38 against 63.37). Database queries fell from 36 to 12 per run.}

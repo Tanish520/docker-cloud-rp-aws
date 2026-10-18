@@ -1,0 +1,71 @@
+\section{Full KDE4 Production Run}
+\label{sec:kde4run}
+
+The benchmarks in Chapters~\ref{sec:batching} and~\ref{sec:placeholders} timed the model alone on samples of up to 1,000
+strings. This chapter puts all the changes into the \textbf{production pipeline} (Phases~1--3, Translation Memory, S3,
+telemetry) and translates the \textbf{whole KDE4 dataset}.
+
+\subsection{Setup}
+All 10,054 usable KDE4 strings were packed into one \code{.resx} file and translated into all 12 languages:
+\textbf{120,648 translations}. The pipeline used the adopted batching configuration (Table~\ref{tab:adopted}), beam~2 and
+placeholder protection, on the same m5.large. The Translation Memory was emptied first, so every string went through the
+model (run \code{ec2-20261016t214343z}).
+
+\subsection{Results}
+The run succeeded: 12 of 12 language files, \textbf{0 failures, 0 missing strings}.
+
+\begin{table}[H]
+\centering
+\caption[Full KDE4 run per language]{Full KDE4 run per language: 10,054 strings per language.}
+\label{tab:kde4run}
+\begin{tabular}{@{}l S[table-format=2.2] S[table-format=5.0] S[table-format=2.2] S[table-format=3.2]@{}}
+\toprule
+\textbf{Language} & {\textbf{Time (min)}} & {\textbf{Translations/hour}} & {\textbf{chrF}} & {\textbf{Placeholders kept (\%)}} \\
+\midrule
+Arabic (ar) & 18.28 & 32991 & 55.42 & 99.72 \\
+Bengali (bn) & 18.38 & 32828 & 64.38 & 100.00 \\
+German (de) & 17.83 & 33841 & 64.22 & 99.44 \\
+Spanish (es) & 17.62 & 34232 & 71.50 & 100.00 \\
+French (fr) & 19.00 & 31742 & 68.89 & 99.72 \\
+Hindi (hi) & 16.12 & 37429 & 64.75 & 100.00 \\
+Japanese (ja) & 16.18 & 37282 & 50.92 & 100.00 \\
+Marathi (mr) & 17.02 & 35434 & 58.45 & 100.00 \\
+Punjabi (pa) & 19.30 & 31258 & 61.53 & 100.00 \\
+Tamil (ta) & 18.77 & 32144 & 64.10 & 100.00 \\
+Telugu (te) & 19.15 & 31502 & 65.28 & 100.00 \\
+Chinese (zh) & 16.73 & 36059 & 39.84 & 99.72 \\
+\midrule
+\textbf{All} & \bfseries 214.4 & \bfseries 33760 & \bfseries 63.29 & \bfseries 99.88 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[reportbars, width=\linewidth, height=5.2cm, bar width=12pt,
+  symbolic x coords={ar,bn,de,es,fr,hi,ja,mr,pa,ta,te,zh}, xtick=data,
+  ylabel={chrF}, ymin=0, ymax=80, enlarge x limits=0.05,
+  nodes near coords, nodes near coords style={font=\tiny, rotate=90, anchor=west}]
+\addplot[fill=cnew!80, draw=cnew] coordinates {(ar,55.42) (bn,64.38) (de,64.22) (es,71.50) (fr,68.89) (hi,64.75) (ja,50.92) (mr,58.45) (pa,61.53) (ta,64.10) (te,65.28) (zh,39.84)};
+\end{axis}
+\end{tikzpicture}
+\caption[chrF per language in the full KDE4 run]{chrF per language in the full KDE4 run. Chinese and Japanese score lowest, as in every earlier test.}
+\label{fig:kde4chrf}
+\end{figure}
+
+\paragraph{Where the time goes.} Translation took \textbf{3~h~34~min} (3~h~38~min for the whole run, including model
+loading and Phases~1 and~3). Model inference accounted for 99.6\% of Phase~2; Translation Memory reads and writes took
+about 44~s in total, and XML and S3 a few seconds. During translation the machine's CPU was 92--100\% busy, and memory use
+stayed at 1.6--1.9~GB per file.
+
+\subsection{Comparison with the Starting Configuration}
+The starting configuration (beam~5, one batch at a time) ran at 13,631 translations per hour in the KDE4 benchmark
+(Table~\ref{tab:kde4beam}). At that rate this dataset would take an estimated \textbf{8.9 hours}; the optimized
+production pipeline needed \textbf{3.6 hours}, about \textbf{2.5\x{} faster}. The benchmarks predicted 2.8\x{}; the
+difference is the work the benchmark does not time: tokenization, placeholder handling, XML, database saves, and the end
+of each 1,000-string chunk, where only one batch is left for the two cores.
+
+\keyresult{\textbf{RQ3.} The optimized pipeline translated the whole twelve-language KDE4 corpus (120,648 translations)
+in 3.6 hours with no failures, at 33,760 translations per hour, chrF 63.29 and 99.88\% of placeholders kept: about
+2.5\x{} faster than the semester's starting configuration.}

@@ -1,0 +1,225 @@
+\documentclass[11pt,a4paper]{article}
+
+% ---------- Page layout and fonts ----------
+\usepackage[a4paper,top=2.5cm,bottom=2.5cm,left=2.5cm,right=2.5cm,headheight=14pt]{geometry}
+\usepackage{newtxtext,newtxmath}
+\usepackage{fontspec}
+\setmonofont{Inconsolatazi4-Regular.otf}[Scale=0.88, BoldFont=Inconsolatazi4-Bold.otf]
+\usepackage{microtype}
+\usepackage{setspace}
+\setstretch{1.08}
+\usepackage[parfill]{parskip}
+
+% ---------- Tables, figures, captions ----------
+\usepackage{booktabs,tabularx,multirow,array,longtable}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage[font=small,labelfont=bf,margin=0.5cm]{caption}
+\usepackage{subcaption}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\setlist{itemsep=2pt,topsep=4pt}
+\usepackage{siunitx}
+\sisetup{group-separator={,},group-minimum-digits=4}
+
+% ---------- Charts and diagrams ----------
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usepgfplotslibrary{groupplots}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,fit,calc,patterns,backgrounds}
+
+\definecolor{cprev}{HTML}{B03A2E}   % previous / before
+\definecolor{cnew}{HTML}{1F6F8B}    % new / after
+\definecolor{cthird}{HTML}{6C8E3B}
+\definecolor{cfourth}{HTML}{C9892B}
+\definecolor{cgrey}{HTML}{8A8F98}
+\definecolor{boxblue}{HTML}{E8F1F6}
+\definecolor{boxgreen}{HTML}{EAF3E3}
+\definecolor{boxamber}{HTML}{FBF1E1}
+\definecolor{boxgrey}{HTML}{F2F3F5}
+\definecolor{linkblue}{HTML}{1A3D7C}
+
+\pgfplotsset{
+  reportbars/.style={
+    ybar, axis lines*=left, ymajorgrids, grid style={dashed,gray!35},
+    tick label style={font=\footnotesize}, label style={font=\small},
+    legend style={font=\footnotesize, draw=none, fill=none, legend columns=-1, at={(0.5,-0.18)}, anchor=north},
+    nodes near coords style={font=\scriptsize},
+    enlarge x limits=0.08,
+    legend image code/.code={\draw[#1, draw=none] (0cm,-0.08cm) rectangle (0.32cm,0.14cm);},
+  },
+}
+
+% ---------- Header / footer ----------
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\textbf{Optimizing a CI/CD Localization Pipeline on AWS}}
+\fancyhead[R]{\small BITS Pilani, Hyderabad Campus}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ---------- Section style ----------
+\usepackage{titlesec}
+\titleformat{\section}{\Large\bfseries}{\thesection}{0.8em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{0.7em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries}{\thesubsubsection}{0.6em}{}
+\titlespacing*{\section}{0pt}{16pt}{8pt}
+\titlespacing*{\subsection}{0pt}{12pt}{5pt}
+
+% ---------- Links ----------
+\usepackage[hidelinks]{hyperref}
+\hypersetup{colorlinks=true,linkcolor=linkblue,urlcolor=linkblue,citecolor=linkblue}
+\usepackage{bookmark}
+
+% ---------- Small helpers ----------
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\x}{$\times$}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+\newcolumntype{R}{>{\raggedleft\arraybackslash}X}
+\newcommand{\keyresult}[1]{%
+  \par\smallskip\noindent\fcolorbox{cnew!60}{boxblue}{\parbox{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}{\small #1}}\par\smallskip}
+
+% ---------- Team ----------
+\newcommand{\reporttitle}{Optimizing a CI/CD Software Localization Pipeline on AWS}
+\newcommand{\reportsubtitle}{Token-Efficient Batching and a Persistent Translation Memory}
+
+\begin{document}
+
+% =================== Title page ===================
+\begin{titlepage}
+\thispagestyle{empty}
+\centering
+\vspace*{0.2cm}
+\includegraphics[width=2.4cm]{figures/bits_logo.png}\par\vspace{0.6cm}
+{\LARGE\bfseries BIRLA INSTITUTE OF TECHNOLOGY AND\\SCIENCE, PILANI\par}
+\vspace{0.25cm}
+{\large Hyderabad Campus\par}
+{\large Department of Computer Science and Information Systems\par}
+\vspace{0.8cm}
+{\huge\bfseries End-Semester Project Report\par}
+\vspace{0.7cm}
+{\Large\bfseries \reporttitle\par}
+\vspace{0.3cm}
+{\large\itshape \reportsubtitle\par}
+\vspace{0.8cm}
+\rule{0.55\linewidth}{0.4pt}\par\vspace{0.3cm}
+Submitted as part of the requirements for\par
+{\large\bfseries Research Practice\par}
+\vspace{0.15cm}
+Under the supervision of\par
+{\large\bfseries Prof.\ Subhrakanta Panda\par}
+\vspace{0.3cm}
+\rule{0.55\linewidth}{0.4pt}\par
+\vspace{0.7cm}
+{\large\bfseries Submitted by\par}
+\vspace{0.3cm}
+\begin{tabular}{|l|l|}
+\hline
+\textbf{Name} & \textbf{ID} \\ \hline
+Aayush Gupta & 2025H1030042H \\
+Tanish Gupta & 2025H1030061H \\
+Akshad &  \\
+Alok &  \\ \hline
+\end{tabular}
+\par\vfill
+{\large End-Semester Submission \,$\cdot$\, Academic Year 2026--2027\par}
+\end{titlepage}
+
+\pagenumbering{roman}
+
+% =================== Certificate ===================
+\section*{Certificate}
+\addcontentsline{toc}{section}{Certificate}
+This is to certify that the project titled \textbf{\reporttitle: \reportsubtitle} has been carried out by
+\textbf{Aayush Gupta}, \textbf{Tanish Gupta}, \textbf{Akshad} and \textbf{Alok} under my supervision as part of the
+Research Practice requirement at BITS Pilani, Hyderabad Campus.
+
+The work presented in this report continues the previous semester's localization pipeline. It moves the pipeline to
+Amazon Web Services, profiles its translation stage, redesigns its batching logic for token efficiency, adds safeguards
+for software placeholders and untranslatable characters, and rebuilds its Translation Memory so that continuous-integration
+runs translate only what has changed. Every result is backed by recorded runs on the KDE4 software-localization corpus in
+twelve languages.
+
+\vspace{2.5cm}
+\hfill\begin{tabular}{c}
+\rule{6.5cm}{0.4pt}\\
+\textbf{Prof.\ Subhrakanta Panda}\\
+Department of Computer Science and\\
+Information Systems\\
+BITS Pilani, Hyderabad Campus
+\end{tabular}
+\clearpage
+
+% =================== Acknowledgement ===================
+\section*{Acknowledgement}
+\addcontentsline{toc}{section}{Acknowledgement}
+We thank \textbf{Prof.\ Subhrakanta Panda} for his guidance throughout the semester. His insistence on measuring every
+change, and on separating what was measured from what was estimated, shaped the experimental method used in this report.
+
+We thank the \textbf{Department of Computer Science and Information Systems}, BITS Pilani, Hyderabad Campus, for the
+academic environment and resources that made this work possible, and the Track~1 team for preparing and cleaning the
+twelve-language KDE4 dataset used throughout our evaluation.
+
+We also acknowledge the open-source communities behind \textbf{NLLB-200}, \textbf{CTranslate2}, \textbf{Hugging Face
+Transformers}, \textbf{SacreBLEU}, the \textbf{OPUS KDE4} corpus and the \textbf{FLORES-200} benchmark.
+\clearpage
+
+% =================== Abstract ===================
+\section*{Abstract}
+\addcontentsline{toc}{section}{Abstract}
+This report documents the second semester of work on an automated software-localization pipeline that translates
+\code{.resx} resource files into multiple languages inside a continuous-integration (CI/CD) workflow. The pipeline was
+moved from Microsoft Azure to Amazon Web Services (AWS) with its translation logic unchanged, and then optimized in three
+steps, each measured on the KDE4 software-localization corpus in twelve languages.
+
+\textbf{Batching.} Profiling showed that model inference takes 99.3\% of the translation stage, that mixed-length batches
+wasted 30\% of the model's input on padding, and that the machine's two cores were only 59\% busy. Sorting strings by
+length cut padding to 4\% but gained only 3\%: padding was not the bottleneck. Reducing the beam size from 5 to 2 made
+translation 2.2\x{} faster for a 0.45-point chrF loss, and translating two batches in parallel with an output length cap
+added 1.27\x{} with identical output. A full production run translated all 10,054 usable KDE4 strings into 12 languages
+(120,648 translations) in 3.6 hours with no failures, about 2.5\x{} faster than the semester's starting configuration.
+
+\textbf{Quality safeguards.} Placeholder protection raised the share of strings whose placeholders survive translation
+from 87.7\% to 99.88\%. The run also revealed that 6.1\% of Chinese outputs silently lost characters the model cannot
+write; these strings are now kept in English and reported instead of being shipped broken.
+
+\textbf{Translation Memory.} The memory was rebuilt to persist between runs, to record which model and settings produced
+each translation, to load once per language per run, and to reuse near-identical strings. In a simulated CI/CD history,
+commits that change 1\%, 5\% and 10\% of an application ran 25\x{}, 14\x{} and 8.4\x{} faster than the previous
+pipeline with 98.4\%, 95.0\% and 90.6\% fewer model tokens, at unchanged quality (chrF 63.38 versus 63.37). Removing the
+remaining per-run set-up costs then cut a 5\% commit, measured end to end, from 5.9 to 3.1 minutes. Overall, such a
+commit went from roughly 1.9 hours at the start of the semester to 3.1 minutes.
+\clearpage
+
+\tableofcontents
+\clearpage
+\listoffigures
+\listoftables
+\clearpage
+
+\pagenumbering{arabic}
+
+\input{sections/01_introduction}
+\input{sections/02_architecture}
+\input{sections/03_setup}
+\input{sections/04_profiling}
+\input{sections/05_batching}
+\input{sections/06_placeholders}
+\input{sections/07_kde4_run}
+\input{sections/08_quality}
+\input{sections/09_tm_design}
+\input{sections/10_tm_experiment}
+\input{sections/11_bottlenecks}
+\input{sections/12_trajectory}
+\input{sections/13_decisions}
+\input{sections/14_cost}
+\input{sections/15_limitations}
+\input{sections/16_conclusion}
+
+\clearpage
+\input{sections/references}
+\appendix
+\input{sections/appendix}
+
+\end{document}

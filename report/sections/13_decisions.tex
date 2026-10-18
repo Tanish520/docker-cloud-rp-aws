@@ -1,0 +1,37 @@
+\section{Engineering Decisions and Rationale}
+\label{sec:decisions}
+
+\subsection{Why beam 2 rather than beam 1?}
+Beam~1 is faster (3.46\x{} against 2.20\x{} on KDE4) but loses 2.15 chrF overall and about six points for Chinese and
+Japanese. Beam~2 keeps every language within 1.4 points of beam~5 for more than twice the speed.
+
+\subsection{Why not larger batches or cross-file batching?}
+Batch layout changed speed by at most 3\% while doubling peak memory, and a 4,096-token attempt did not complete on the
+8~GB machine. Batches are therefore kept at 1,024 tokens and per file, which also preserves per-file telemetry.
+
+\subsection{Why square markers for placeholders?}
+They survived translation in 99.15\% of cases against 88.78\% and 80.66\% for the alternatives, because the model copies
+citation-style markers such as \code{[1]} unchanged.
+
+\subsection{Why keep untranslatable strings in English?}
+Forcing the model to avoid \code{<unk>} produced fluent but wrong words. An English string in a localized application is
+visible and can be fixed by a translator; a wrong word is silent.
+
+\subsection{Why a hash as the memory key?}
+SQL Server limits a key to 900 bytes (434 characters). A fixed 32-byte SHA-256 hash removes the limit while keeping
+lookups indexed.
+
+\subsection{Why record the engine version with each translation?}
+It makes reuse safe across model and setting changes without manual cleanup: older entries simply stop matching.
+
+\subsection{Why base punctuation rules on counts?}
+The first, guessed rules made Japanese reuse worse than fresh translation. Counting how every reference ends turned the
+result from a loss into a gain.
+
+\subsection{Why test the memory with commit-like versions?}
+A memory only pays off across runs. Versions with genuinely new strings, run in sequence with the memory kept, measure
+the savings a CI server would actually see, rather than a seeded cache rate.
+
+\subsection{Why a stopped ready runner?}
+A stopped machine keeps its disk (the built image and the model) for \$3.65 per month and starts in seconds, saving about
+two minutes per CI run over a fresh machine.

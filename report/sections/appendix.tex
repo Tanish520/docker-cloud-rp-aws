@@ -1,0 +1,53 @@
+\section{Telemetry Fields Added This Semester}
+\label{app:telemetry}
+Each translated file emits one \code{RESEARCH\_DATA} record. The previous semester's fields are unchanged; Table~\ref{tab:newfields}
+lists the fields added this semester.
+
+\begin{table}[H]
+\centering
+\caption[New telemetry fields]{New \code{RESEARCH\_DATA} fields.}
+\label{tab:newfields}
+\begin{tabularx}{\linewidth}{@{}l L@{}}
+\toprule
+\textbf{Field} & \textbf{Meaning} \\
+\midrule
+\code{cloud\_provider}, \code{region}, \code{run\_id} & where and in which run the file was translated \\
+\code{cpu\_limit}, \code{cpu\_model}, \code{host\_cpu\_count} & cores available to the translator and the host CPU \\
+\code{tm\_db\_queries} & database queries made for this file (0 after the language is loaded) \\
+\code{tm\_lookup\_ms} & time spent on memory lookups \\
+\code{tm\_hits\_in\_run} & hits on entries translated earlier in the same run \\
+\code{tm\_twin\_hits} & strings adapted from a near-twin \\
+\code{tm\_kept\_english} & strings remembered as kept in English \\
+\code{model\_strings} & strings sent to the model, including placeholder fallbacks \\
+\code{real\_input\_tokens}, \code{real\_output\_tokens} & tokens read and written by the model (tokenizer counts) \\
+\code{padding\_pct} & share of padded input positions in this file's batches \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Recorded Runs}
+\label{app:runs}
+All runs used an m5.large in \code{ap-south-1}. Outputs are stored in S3 under \code{runs/<run-id>/}, and logs and telemetry
+in CloudWatch Logs.
+
+\begin{table}[H]
+\centering
+\caption[Recorded runs]{Runs referenced in this report.}
+\label{tab:runs}
+\begin{tabularx}{\linewidth}{@{}l L l@{}}
+\toprule
+\textbf{Run} & \textbf{Content} & \textbf{Chapter} \\
+\midrule
+\code{ec2-20261015t233954z} & first AWS run, 50 strings $\times$ 7 languages & \ref{sec:arch} \\
+\code{ec2-20261016t103748z} & batch layout and beam size, \code{.resx} workload and FLORES-200 & \ref{sec:batching} \\
+\code{ec2-20261016t115802z} & beam size on 1,000 KDE4 strings $\times$ 12 languages & \ref{sec:batching} \\
+\code{ec2-20261016t142418z} & parallel batches and output length cap & \ref{sec:batching} \\
+\code{ec2-20261016t195057z} & placeholder marker styles & \ref{sec:placeholders} \\
+\code{ec2-20261016t214343z} & full KDE4 production run & \ref{sec:kde4run} \\
+\code{ec2-20261017t063722z} & check run: long strings, \code{<unk>}, memory hits & \ref{sec:quality} \\
+\code{ec2-20261017t175415z} & Translation Memory experiment (11 steps) & \ref{sec:tmexp} \\
+\code{ec2-20261018t132556z} -- \code{t142626z} & commits with the per-run fixes & \ref{sec:bottlenecks} \\
+\code{ec2-20261018t143022z}, \code{t143618z} & 5\% commit before and after the fixes & \ref{sec:bottlenecks} \\
+\bottomrule
+\end{tabularx}
+\end{table}

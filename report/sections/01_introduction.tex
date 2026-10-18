@@ -1,0 +1,71 @@
+\section{Introduction}
+\label{sec:intro}
+
+Software products keep their user-facing text in resource files such as \code{.resx}. Releasing a product in several
+regions means translating every string into every supported language, and doing so again whenever the text changes. A
+localization pipeline automates this inside continuous integration: on every commit it extracts the strings, translates
+them with a neural machine translation (NMT) model, stores the results in a Translation Memory, and writes the localized
+resource files back.
+
+The previous semester built such a pipeline on Microsoft Azure and established that, once the model runs locally, the
+pipeline is \emph{compute-bound}: almost all of its time is spent inside the model. This semester asks the natural next
+question: \emph{how much of that model work is necessary?} We approached it from two sides. First, make each model call
+more efficient (batching). Second, avoid model calls that repeat earlier work (Translation Memory). Along the way, a
+full-scale run on a real software-localization corpus exposed quality problems that only appear at scale, and those were
+fixed too.
+
+\subsection{Research Questions}
+\begin{enumerate}[label=\textbf{RQ\arabic*.}, leftmargin=3.2em]
+  \item Where does the time go in the translation stage of the pipeline?
+  \item Which batching changes improve token efficiency and speed, and what do they cost in translation quality?
+  \item How does the optimized pipeline perform end to end on a twelve-language software-localization corpus?
+  \item Which quality problems appear only at scale, and how can they be prevented?
+  \item How much model work, time and cost does a persistent Translation Memory save under realistic CI/CD commits?
+  \item Which set-up costs remain in every CI run, and how much does removing them save?
+\end{enumerate}
+
+\subsection{Contributions}
+\begin{itemize}
+  \item An AWS deployment of the pipeline, defined as infrastructure-as-code, with translation logic kept identical to
+        the Azure version (\S\ref{sec:arch}).
+  \item A profiling baseline and a one-change-at-a-time batching study covering batch layout, length sorting, beam size,
+        parallel batches and an output length cap (\S\ref{sec:profiling}, \S\ref{sec:batching}).
+  \item Placeholder protection that keeps software placeholders such as \code{\%1} and \code{\{name\}} intact
+        (\S\ref{sec:placeholders}).
+  \item A full production run on all 10,054 usable KDE4 strings in 12 languages (\S\ref{sec:kde4run}), and fixes for the
+        quality problems it revealed (\S\ref{sec:quality}).
+  \item A redesigned Translation Memory and a CI/CD-style experiment that quantifies its savings (\S\ref{sec:tmdesign},
+        \S\ref{sec:tmexp}).
+  \item Removal of the remaining per-run set-up costs, measured end to end (\S\ref{sec:bottlenecks}).
+\end{itemize}
+
+\subsection{Mapping to the Semester Plan}
+Table~\ref{tab:plan} maps the Track~3 tasks of the semester plan to the chapters of this report.
+
+\begin{table}[H]
+\centering
+\caption[Semester plan mapping]{Track 3 (CI/CD \& Memory Optimization) tasks and where they are addressed.}
+\label{tab:plan}
+\begin{tabularx}{\linewidth}{@{}l L l@{}}
+\toprule
+\textbf{Phase} & \textbf{Task in the semester plan} & \textbf{Chapters} \\
+\midrule
+1 (weeks 1--2) & Profile pipeline bottlenecks; design new batching logic for token efficiency & \ref{sec:profiling}, \ref{sec:batching} \\
+2 (weeks 3--4) & Implement optimized batching; build/update the Translation Memory to reduce lookups & \ref{sec:batching}--\ref{sec:tmdesign} \\
+3 (weeks 5--7) & Benchmark token-usage reduction, lookup speed-ups and cost savings & \ref{sec:tmexp}--\ref{sec:cost} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Scope and Conventions}
+\begin{itemize}
+  \item \textbf{Translation} means one string translated into one language; 100 strings in 12 languages are 1,200
+        translations.
+  \item \textbf{Previous pipeline} means the pipeline before the change being discussed; each chapter states which
+        version it compares against.
+  \item \textbf{Measured} results come from recorded runs. \textbf{Estimated} results are calculated from measured rates and
+        are always labelled as such.
+  \item Translation quality is reported as \textbf{chrF}~\cite{chrf} against the reference translations, and as the share
+        of strings whose placeholders survive translation. Lexical and neural metrics beyond chrF (BLEU, COMET) are
+        computed by Track~1 and are outside the scope of this report.
+\end{itemize}

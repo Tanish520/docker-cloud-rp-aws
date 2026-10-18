@@ -1,0 +1,19 @@
+\section{Conclusion}
+\label{sec:conclusion}
+
+This semester moved the localization pipeline to AWS and reduced the work it does on every commit. Profiling showed that
+model inference takes 99.3\% of the translation stage. A one-change-at-a-time study then showed that the common intuition
+about batching, that less padding means more speed, does not hold here: padding fell from 30\% to 4\% for a 3\% gain,
+while the beam size and idle cores were the real costs. With beam~2, parallel batches and an output length cap, the
+production pipeline translated the full twelve-language KDE4 corpus, 120,648 translations, in 3.6 hours with no failures,
+about 2.5\x{} faster than at the start of the semester.
+
+Scale exposed problems that small tests could not: broken placeholders and characters the model cannot write. Placeholder
+protection raised survival from 87.7\% to 99.88\%, and untranslatable strings are now kept in English and reported rather
+than shipped broken.
+
+The redesigned Translation Memory changed the economics of the pipeline. Because it persists, records the engine that
+produced each entry, loads once per language and reuses near-identical strings, the cost of a run now follows the size of
+the change rather than the size of the application: 1\%, 5\% and 10\% commits ran 25\x{}, 14\x{} and 8.4\x{} faster with
+90--98\% fewer model tokens and unchanged quality. Removing the remaining per-run set-up brought a typical 5\% commit to
+3.1 minutes end to end, from roughly 1.9 hours at the start of the semester.

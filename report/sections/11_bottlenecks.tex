@@ -1,0 +1,122 @@
+\section{Removing the Remaining Per-Run Costs}
+\label{sec:bottlenecks}
+
+\subsection{Where a CI Run Spends Its Time}
+The experiment in Chapter~\ref{sec:tmexp} ran on one machine that stayed on between steps. That measures the memory
+fairly, but it hides the cost a real CI run pays on \emph{every} commit: starting a machine and preparing it. Timing a
+small commit end to end showed four remaining costs (Table~\ref{tab:runcosts}).
+
+\begin{table}[H]
+\centering
+\caption[Remaining per-run costs]{Per-run costs that remained after the Translation Memory redesign.}
+\label{tab:runcosts}
+\begin{tabularx}{\linewidth}{@{}l r L@{}}
+\toprule
+\textbf{Part of one CI run} & \textbf{Time} & \textbf{Cause} \\
+\midrule
+Start and stop a fresh machine & $\sim$106 s & a new machine boots and installs Docker for every commit \\
+Image build and model set-up & $\sim$80 s & the container image is built from scratch; the 629~MB model was copied into the image although it is mounted at run time; the model was downloaded and test-loaded every run \\
+Kept-English strings & $\sim$23 s & strings stored as untranslatable were not remembered, so 117 went back to the model on every run with the same result \\
+Small model calls & -- & $\sim$30 new strings per language form one batch, so one of the two engine workers is idle \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Fixes}
+\begin{enumerate}
+  \item \textbf{Model kept out of the image build.} A build-ignore rule excludes the model folder, which the translator
+        mounts at run time.
+  \item \textbf{Kept-English strings remembered.} They are saved with an empty translation for the current engine version.
+        Later runs skip the model for them and still list them for a translator; a new engine version retries them.
+  \item \textbf{Ready runner.} Instead of a fresh machine per commit, one runner is kept \emph{stopped} between runs and
+        started when needed. Its disk keeps the built image and the model, so a run skips the build and the download, and a
+        model already present for the current version also skips its test load. The runner is stopped, not deleted, after
+        each run.
+  \item \textbf{Balanced small batches.} A model call small enough for two batches is split into two length-sorted batches
+        of equal tokens, one per engine worker. Large calls are unchanged.
+\end{enumerate}
+
+\subsection{Measured Before and After}
+One 5\% commit was timed end to end, from launch to result, with the code before these fixes on a fresh machine (as CI ran
+until then) and with the current code on the ready runner, on the same day and machine type
+(runs \code{ec2-20261018t143022z} and \code{ec2-20261018t143618z}).
+
+\begin{table}[H]
+\centering
+\caption[One 5\% commit before and after the fixes]{One 5\% commit end to end, before and after the fixes. Both runs completed all 12 files with no failures.}
+\label{tab:beforeafter}
+\begin{tabular}{@{}l S[table-format=3.1] S[table-format=3.1] S[table-format=2.1]@{}}
+\toprule
+\textbf{Part} & {\textbf{Before (s)}} & {\textbf{After (s)}} & {\textbf{Saved (s)}} \\
+\midrule
+Start and stop the machine & 106.1 & 37.5 & 68.6 \\
+Image and model set-up & 79.5 & 18.7 & 60.8 \\
+Translation work & 168.1 & 127.2 & 40.9 \\
+Phases 1 and 3 & 2.9 & 2.8 & 0.1 \\
+\midrule
+\textbf{Whole run} & \bfseries 356.6 & \bfseries 186.2 & \bfseries 170.4 \\
+\midrule
+Strings sent to the model & {1,284} & {1,188} & \\
+Machine cost of the run & {\$0.0100} & {\$0.0052} & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[xbar stacked, width=0.9\linewidth, height=3.4cm, bar width=18pt, enlarge y limits=0.45,
+  axis lines*=left, xmajorgrids, grid style={dashed,gray!35},
+  symbolic y coords={After,Before}, ytick=data, xmin=0, xmax=380,
+  xlabel={Seconds for one 5\% commit}, tick label style={font=\footnotesize}, label style={font=\small},
+  legend style={font=\footnotesize, draw=none, legend columns=4, at={(0.5,-0.62)}, anchor=north}]
+\addplot[fill=cgrey!70, draw=cgrey] coordinates {(106.1,Before) (37.5,After)};
+\addplot[fill=cfourth!75, draw=cfourth] coordinates {(79.5,Before) (18.7,After)};
+\addplot[fill=cnew!80, draw=cnew] coordinates {(168.1,Before) (127.2,After)};
+\addplot[fill=cthird!75, draw=cthird] coordinates {(2.9,Before) (2.8,After)};
+\legend{Machine start/stop, Image and model set-up, Translation, Phases 1 and 3}
+\end{axis}
+\end{tikzpicture}
+\caption[Composition of one 5\% commit]{Composition of one 5\% commit before and after the fixes: 5.9 minutes to 3.1 minutes (1.9\x{}).}
+\label{fig:beforeafter}
+\end{figure}
+
+Each commit must contain strings that are new to the memory, so the two runs used different 5\% versions (v3-r2 and
+v3-r3); with the previous code, v3-r3 needed about 9\% less translation work than v3-r2. Table~\ref{tab:samecommit}
+therefore compares translation work on the \emph{same} commits.
+
+\begin{table}[H]
+\centering
+\caption[Translation work on the same commits]{Translation work on the same commits with the previous code (Chapter~\ref{sec:tmexp}) and the current code.}
+\label{tab:samecommit}
+\begin{tabular}{@{}l c S[table-format=3.1] S[table-format=3.1] S[table-format=3.0]@{}}
+\toprule
+\textbf{Commit} & \textbf{Strings to model} & {\textbf{Before (s)}} & {\textbf{After (s)}} & {\textbf{Change (\%)}} \\
+\midrule
++1\% (v2-r1) & 357 $\rightarrow$ 240 & 54.6 & 38.2 & -30 \\
++1\% (v2-r2) & 345 $\rightarrow$ 228 & 55.6 & 39.2 & -29 \\
++1\% (v2-r3) & 357 $\rightarrow$ 240 & 96.4 & 74.5 & -23 \\
++5\% (v3-r1) & 1,261 $\rightarrow$ 1,144 & 155.5 & 127.4 & -18 \\
++5\% (v3-r3) & 1,305 $\rightarrow$ 1,188 & 152.6 & 127.2 & -17 \\
++10\% (v4-r1) & 2,446 $\rightarrow$ 2,329 & 287.5 & 252.1 & -12 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Contribution of Each Fix}
+\begin{itemize}
+  \item \textbf{Ready runner and image fix:} machine start and stop fell from about 106~s to 37--44~s, and image and model
+        set-up from about 80~s to 19--36~s (four runs on the ready runner). Together this saves about two minutes on every
+        CI run, whatever the size of the commit: the largest gain.
+  \item \textbf{Remembered kept-English strings:} exactly 117 fewer strings sent to the model per commit; all 117 were
+        found in the memory instead. This is most of the saving on small commits.
+  \item \textbf{Balanced small batches:} about 8--10\% less time per translated string on 5\% and 10\% commits
+        (0.123 to 0.111~s, and 0.118 to 0.108~s), but no measurable gain on 1\% commits, where fixed per-file costs
+        outweigh model time.
+\end{itemize}
+
+With all fixes, measured end to end on the ready runner, a 1\% commit took 156.9~s, a 5\% commit 186.0--186.2~s and a 10\%
+commit 312.2~s. The stopped runner's 40~GB disk costs \$3.65 per month whether it is used or not.
+
+\keyresult{\textbf{RQ6.} Starting a fresh machine, rebuilding the image and re-sending untranslatable strings cost about
+three minutes per CI run. Removing them cut a 5\% commit, measured end to end, from 5.9 to 3.1 minutes (1.9\x{}).}

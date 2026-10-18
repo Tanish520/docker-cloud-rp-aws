@@ -1,0 +1,106 @@
+\section{System Architecture on AWS}
+\label{sec:arch}
+
+\subsection{End-to-End Pipeline}
+The pipeline keeps the three-phase shape of the previous semester (Figure~\ref{fig:arch}):
+
+\begin{enumerate}
+  \item \textbf{Phase 1 -- Extract.} English \code{.resx} files are converted to XLIFF, one file per target language,
+        and uploaded to Amazon S3.
+  \item \textbf{Phase 2 -- Translate.} Each XLIFF file is checked against the Translation Memory in Amazon RDS (SQL
+        Server). Strings not found are translated by NLLB-200 (distilled, 600M parameters)~\cite{nllb} running on the
+        CTranslate2 engine~\cite{ct2} with INT8 quantisation inside a Docker container, and the new translations are saved
+        back to the memory.
+  \item \textbf{Phase 3 -- Merge.} The translated XLIFF files are merged back into localized \code{.resx} files and
+        published to S3.
+\end{enumerate}
+
+Every translated file emits one structured \code{RESEARCH\_DATA} telemetry record to Amazon CloudWatch Logs, with the
+same schema as the previous semester plus the new fields listed in Appendix~\ref{app:telemetry}.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  box/.style={draw=cnew!70!black, fill=boxblue, rounded corners=3pt, align=center, font=\small, minimum height=1.25cm, text width=2.9cm},
+  src/.style={draw=cgrey, fill=boxgrey, rounded corners=3pt, align=center, font=\small, minimum height=1.25cm, text width=2.3cm},
+  store/.style={draw=cgrey, fill=boxgrey, rounded corners=3pt, align=center, font=\small, minimum height=1.25cm, text width=3.4cm},
+  arr/.style={-{Stealth[length=2.4mm]}, thick, draw=black!70},
+  lbl/.style={font=\scriptsize, fill=white, inner sep=1.5pt}
+]
+\node[box] (p1) {\textbf{Phase 1}\\Extract to XLIFF};
+\node[box, right=0.9cm of p1] (p2) {\textbf{Phase 2}\\Translate with\\NLLB-200 on CT2};
+\node[box, right=0.9cm of p2] (p3) {\textbf{Phase 3}\\Merge into \code{.resx}};
+\node[src, left=1.3cm of p1] (commit) {Developer\\commit};
+\node[store, below=1.6cm of p1] (s3) {\textbf{Amazon S3}\\XLIFF and outputs,\\model cache};
+\node[store, below=1.6cm of p2] (rds) {\textbf{Amazon RDS}\\Translation Memory\\(SQL Server)};
+\node[store, below=1.6cm of p3] (cw) {\textbf{CloudWatch Logs}\\logs and telemetry};
+\node[store, above=1.3cm of p2] (sm) {\textbf{Secrets Manager}\\database credentials};
+\begin{scope}[on background layer]
+\node[draw=cnew!70!black, dashed, rounded corners=5pt, fit=(p1)(p2)(p3), inner sep=8pt] (runner) {};
+\end{scope}
+\node[font=\scriptsize\itshape, anchor=south west] at (runner.north west) {EC2 runner (m5.large, 2 vCPU, 8 GB)};
+\draw[arr] (commit) -- node[lbl, above=3pt]{CI run} (p1.west -| runner.west);
+\draw[arr] (p1) -- (p2);
+\draw[arr] (p2) -- (p3);
+\draw[arr, <->] (p1) -- node[lbl]{files} (s3);
+\draw[arr, <->] (p2) -- node[lbl]{lookup / save} (rds);
+\draw[arr] (p3) -- node[lbl]{telemetry} (cw);
+\draw[arr] (sm) -- (sm |- runner.north);
+\end{tikzpicture}
+\caption[The localization pipeline on AWS]{The localization pipeline on AWS. All resources are created by one
+CloudFormation stack in \code{ap-south-1}.}
+\label{fig:arch}
+\end{figure}
+
+\subsection{Azure to AWS Service Mapping}
+The move to AWS changed only the services around the translation code (Table~\ref{tab:mapping}). The translation logic
+itself was kept identical to the Azure version, and automated parity tests compare the two code bases so that any
+divergence is a deliberate, documented change.
+
+\begin{table}[H]
+\centering
+\caption[Azure to AWS service mapping]{Azure services of the previous semester and their AWS replacements.}
+\label{tab:mapping}
+\begin{tabularx}{\linewidth}{@{}l l L@{}}
+\toprule
+\textbf{Role} & \textbf{Azure (previous semester)} & \textbf{AWS (this semester)} \\
+\midrule
+File storage & Blob Storage & Amazon S3 (\code{runs/<run-id>/raw}, \code{translated}, \code{output}) \\
+Translation Memory & Azure SQL Database & Amazon RDS for SQL Server Express \\
+Telemetry & Application Insights & Amazon CloudWatch Logs (same \code{RESEARCH\_DATA} payload) \\
+Credentials & pipeline variables & AWS Secrets Manager (RDS-managed password) \\
+CI/CD orchestration & Azure DevOps Pipelines & EC2 runner driven by SSM Run Command$^{\dagger}$ \\
+Infrastructure & manual set-up & AWS CloudFormation (one stack) \\
+\bottomrule
+\end{tabularx}
+
+\smallskip
+{\footnotesize $^{\dagger}$An AWS CodePipeline/CodeBuild definition is included, but CodeBuild is not enabled for this
+account, so runs use an EC2 runner with the same three phases.}
+\end{table}
+
+\subsection{Baseline on AWS}
+The first complete AWS run (\code{ec2-20261015t233954z}) translated the previous semester's 50-string workload into seven
+languages with an empty memory. All seven files completed with no failures (Table~\ref{tab:awsbaseline}). This run is the
+starting point for the profiling in Chapter~\ref{sec:profiling}.
+
+\begin{table}[H]
+\centering
+\caption[First AWS run]{First AWS run: 50 strings per language, empty Translation Memory, beam 5 (m5.large, 2 cores).}
+\label{tab:awsbaseline}
+\begin{tabular}{@{}l S[table-format=2.2] S[table-format=4.0] S[table-format=2.2]@{}}
+\toprule
+\textbf{Language} & {\textbf{File time (s)}} & {\textbf{Strings/hour}} & {\textbf{Model time (s)}} \\
+\midrule
+de-DE & 22.30 & 8070 & 22.15 \\
+es-ES & 21.19 & 8492 & 21.04 \\
+fr-FR & 22.73 & 7920 & 22.59 \\
+hi-IN & 21.71 & 8291 & 21.57 \\
+ja-JP & 20.41 & 8820 & 20.27 \\
+ru-RU & 22.10 & 8143 & 21.97 \\
+zh-CN & 19.47 & 9247 & 19.32 \\
+\midrule
+\textbf{Average} & \bfseries 21.42 & \bfseries 8426 & \bfseries 21.27 \\
+\bottomrule
+\end{tabular}
+\end{table}

@@ -1,0 +1,202 @@
+\section{Batching Optimization}
+\label{sec:batching}
+
+Batching decides how strings are grouped before they reach the model. This chapter tests each part of the batching logic
+separately: batch layout and sorting, beam size, and parallel execution with an output length cap.
+
+\subsection{Benchmark Method}
+A benchmark tool runs inside the production container, with the same model, the same two pinned cores and the same
+machine type, and times only model inference (tokenize, translate, detokenize). Its baseline step calls the production
+translation function itself, and a sanity check confirmed that the benchmark engine reproduces production output exactly
+(100 of 100 strings).
+
+\subsection{Batch Layout and Sorting}
+Table~\ref{tab:layout} applies the layout changes to the \code{.resx} workload (1,071 translations). A run-wide plan with
+real token counts and 1,024-token batches, sorted by length, cut padding from 30.1\% to 4.3\%. Smaller and larger token
+budgets were also tested.
+
+\begin{table}[H]
+\centering
+\caption[Batch layout and beam size]{Batch layout and beam size on the \code{.resx} workload (run
+\code{ec2-20261016t103748z}). ``Identical'' compares the output with the baseline's output.}
+\label{tab:layout}
+\small\setlength{\tabcolsep}{4.5pt}
+\begin{tabular}{@{}l l c S[table-format=3.2] S[table-format=1.2] S[table-format=2.1] c c@{}}
+\toprule
+\textbf{Step} & \textbf{Change} & \textbf{Beam} & {\textbf{Time (s)}} & {\textbf{Speed-up}} & {\textbf{Padding (\%)}} & \textbf{Peak mem.} & \textbf{Identical} \\
+\midrule
+A & Original pipeline & 5 & 434.84 & 1.00 & 30.1 & 1.8 GB & -- \\
+D-256 & Sorted, 256-token batches & 5 & 451.10 & 0.96 & 1.2 & 1.8 GB & 100\% \\
+D-512 & Sorted, 512-token batches & 5 & 432.62 & 1.01 & 2.4 & 2.2 GB & 100\% \\
+D-1024 & Sorted, 1,024-token batches & 5 & 425.78 & 1.02 & 4.3 & 3.5 GB & 100\% \\
+\midrule
+F & D-1024 + beam 2 & 2 & 188.08 & 2.31 & 4.3 & 3.5 GB & 77\% \\
+G & D-1024 + beam 1 & 1 & 103.58 & 4.20 & 4.3 & 3.5 GB & 59\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[reportbars, width=0.92\linewidth, height=5.6cm, bar width=17pt,
+  symbolic x coords={A,D-256,D-512,D-1024,F,G}, xtick={A,D-256,D-512,D-1024,F,G},
+  ylabel={Inference time (s)}, ymin=0, ymax=520,
+  nodes near coords, nodes near coords align={vertical},
+  xticklabels={{A\\beam 5},{D-256\\beam 5},{D-512\\beam 5},{D-1024\\beam 5},{F\\beam 2},{G\\beam 1}},
+  xticklabel style={align=center}]
+\addplot[fill=cprev!80, draw=cprev] coordinates {(A,434.84) (D-256,451.10) (D-512,432.62) (D-1024,425.78)};
+\addplot[fill=cnew!80, draw=cnew] coordinates {(F,188.08) (G,103.58)};
+\end{axis}
+\end{tikzpicture}
+\caption[Inference time per batching step]{Inference time for each batching step. Layout changes (red) moved time by at
+most 4\%; beam size (blue) halved it or more.}
+\label{fig:layout}
+\end{figure}
+
+\paragraph{Finding.} Layout changes never altered a translation, but moved time by only $-4\%$ to $+2\%$, within the
+2\% run-to-run noise measured on identical work. Padding fell from 30\% to 1--4\% without a matching speed-up:
+\textbf{padding is not the bottleneck}. Peak memory, however, roughly doubled with 1,024-token batches, and a 4,096-token
+attempt did not complete on the 8~GB machine, so batches above about 1,024 tokens were ruled out. Telling CTranslate2
+explicitly to use two threads per batch also changed nothing.
+
+\subsection{Beam Size}
+The beam size is the number of candidate translations the model keeps while decoding. Steps F and G show that it, not
+the layout, dominates the cost: beam~2 was 2.31\x{} and beam~1 4.20\x{} faster than the baseline. Because a smaller
+beam changes the output, quality was checked on two datasets.
+
+\paragraph{FLORES-200.} On 40 human-translated sentences per language (Table~\ref{tab:flores}), beam~2 lost 0.87 chrF and
+beam~1 lost 1.40 chrF overall.
+
+\begin{table}[H]
+\centering
+\caption[chrF on FLORES-200 by beam size]{chrF on FLORES-200 (first 40 dev sentences per language) by beam size.}
+\label{tab:flores}
+\begin{tabular}{@{}c S[table-format=2.2] *{7}{S[table-format=2.2]}@{}}
+\toprule
+\textbf{Beam} & {\textbf{All 7}} & {de-DE} & {es-ES} & {fr-FR} & {hi-IN} & {ja-JP} & {ru-RU} & {zh-CN} \\
+\midrule
+5 & 56.69 & 62.71 & 55.54 & 68.75 & 57.65 & 33.83 & 58.35 & 28.58 \\
+2 & 55.82 & 61.93 & 55.63 & 67.05 & 56.98 & 34.77 & 56.71 & 26.32 \\
+1 & 55.29 & 60.08 & 55.73 & 67.76 & 55.03 & 33.39 & 57.33 & 25.07 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{KDE4.} Forty sentences per language is a small sample, so the comparison was repeated on a fixed random sample
+of 1,000 KDE4 strings in all twelve languages (12,000 translations per beam), using run-wide, length-sorted 1,024-token
+batches (Tables~\ref{tab:kde4beam} and~\ref{tab:kde4beamlang}).
+
+\begin{table}[H]
+\centering
+\caption[Beam size on the KDE4 sample]{Beam size on 1,000 KDE4 strings $\times$ 12 languages (run \code{ec2-20261016t115802z}).}
+\label{tab:kde4beam}
+\begin{tabular}{@{}c S[table-format=4.0] S[table-format=5.0] S[table-format=1.2] S[table-format=2.2] c@{}}
+\toprule
+\textbf{Beam} & {\textbf{Time (s)}} & {\textbf{Translations/hour}} & {\textbf{Speed-up}} & {\textbf{chrF (all 12)}} & \textbf{Identical to beam 5} \\
+\midrule
+5 & 3169 & 13631 & 1.00 & 64.41 & -- \\
+\textbf{2} & \bfseries 1442 & \bfseries 29949 & \bfseries 2.20 & \bfseries 63.96 & 84\% \\
+1 & 915 & 47197 & 3.46 & 62.26 & 69\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption[chrF per language by beam size]{chrF per language on the KDE4 sample by beam size.}
+\label{tab:kde4beamlang}
+\small
+\begin{tabular}{@{}c *{12}{S[table-format=2.2]}@{}}
+\toprule
+\textbf{Beam} & {hi} & {ar} & {bn} & {de} & {es} & {fr} & {ja} & {mr} & {pa} & {ta} & {te} & {zh} \\
+\midrule
+5 & 66.90 & 57.15 & 64.87 & 65.06 & 72.01 & 70.23 & 53.43 & 59.34 & 63.35 & 64.70 & 66.07 & 39.68 \\
+2 & 66.61 & 55.74 & 64.11 & 64.39 & 71.69 & 69.48 & 52.52 & 59.08 & 63.27 & 65.07 & 65.86 & 39.30 \\
+1 & 65.60 & 53.77 & 63.88 & 62.21 & 68.49 & 68.16 & 46.51 & 58.76 & 62.68 & 63.70 & 64.26 & 33.72 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.78\linewidth, height=6.2cm, axis lines*=left, ymajorgrids, xmajorgrids, grid style={dashed,gray!35},
+  xlabel={Speed-up over beam 5}, ylabel={chrF}, xmin=0.6, xmax=4.0, ymin=54, ymax=66,
+  tick label style={font=\footnotesize}, label style={font=\small},
+  legend style={font=\footnotesize, draw=none, legend columns=2, at={(0.5,-0.24)}, anchor=north}]
+\addplot[mark=*, thick, color=cnew, nodes near coords, point meta=explicit symbolic,
+  every node near coord/.append style={font=\scriptsize, anchor=south west}]
+  coordinates {(1.00,64.41)[beam 5] (2.20,63.96)[beam 2] (3.46,62.26)[beam 1]};
+\addlegendentry{KDE4 (12 languages)}
+\addplot[mark=square*, thick, color=cprev, nodes near coords, point meta=explicit symbolic,
+  every node near coord/.append style={font=\scriptsize, anchor=north west}]
+  coordinates {(1.00,56.69)[beam 5] (2.15,55.82)[beam 2] (3.65,55.29)[beam 1]};
+\addlegendentry{FLORES-200 (7 languages)}
+\end{axis}
+\end{tikzpicture}
+\caption[Speed against quality by beam size]{Speed against quality for beam sizes 5, 2 and 1. Beam 2 keeps almost all
+of the quality at more than twice the speed.}
+\label{fig:beam}
+\end{figure}
+
+\paragraph{Finding.} On real localization text, beam~2 is \textbf{2.2\x{} faster for a 0.45-point chrF loss}, and every
+language stays within 1.4 points of beam~5 (Tamil slightly improves). Beam~1 costs more on KDE4 than on FLORES, with large
+drops for Japanese ($-6.9$) and Chinese ($-6.0$), which makes it unsuitable for these languages. Beam~2 was adopted for
+production.
+
+\subsection{Parallel Batches and an Output Length Cap}
+During the KDE4 runs the machine's CPU was only about 59\% busy: CTranslate2 processed one batch at a time and part of the
+two cores sat idle. Three steps were tested on 500 KDE4 strings in 12 languages (6,000 translations, beam~2):
+
+\begin{itemize}
+  \item \textbf{P1:} load the model with two engine workers (\code{inter\_threads=2}, \code{intra\_threads=1}) and queue all
+        batches at once, so two batches are translated in parallel, one per core.
+  \item \textbf{P2:} P1 with smaller 512-token batches.
+  \item \textbf{P3:} P1 plus a per-batch output cap of twice the longest input plus 10 tokens. Because batches are sorted by
+        length, the cap fits every string in the batch and only stops runaway outputs.
+\end{itemize}
+
+\begin{table}[H]
+\centering
+\caption[Parallel batches and output length cap]{Parallel batches and output length cap (run \code{ec2-20261016t142418z}, 6,000 translations, beam 2).}
+\label{tab:parallel}
+\begin{tabular}{@{}l l S[table-format=3.2] S[table-format=1.2] S[table-format=2.1] c c@{}}
+\toprule
+\textbf{Step} & \textbf{Change} & {\textbf{Time (s)}} & {\textbf{Speed-up}} & {\textbf{CPU busy (\%)}} & \textbf{Identical} & \textbf{Peak mem.} \\
+\midrule
+P0 & One batch at a time & 617.52 & 1.00 & 59.3 & -- & 2.6 GB \\
+P1 & Two batches in parallel & 514.97 & 1.20 & 99.6 & 100\% & 4.5 GB \\
+P2 & P1 with 512-token batches & 539.68 & 1.14 & 99.3 & 99.9\% & 4.5 GB \\
+\textbf{P3} & \textbf{P1 + output length cap} & \bfseries 488.14 & \bfseries 1.27 & 99.6 & \textbf{100\%} & 4.5 GB \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Finding.} Parallel batches raised CPU use from 59\% to 99.6\% and made translation 1.20\x{} faster with
+identical output. The gain is below 2\x{} because two cores sharing the work each run slower than one core alone, and
+it costs a second set of working buffers (2.6 to 4.5~GB, still safe on 8~GB). Smaller batches were slower, because more
+batches mean more per-batch overhead. The length cap added a further 6\% (1.27\x{} in total) without changing a single
+translation.
+
+\subsection{Adopted Configuration}
+\begin{table}[H]
+\centering
+\caption[Adopted batching configuration]{Batching configuration before and after this chapter.}
+\label{tab:adopted}
+\begin{tabularx}{\linewidth}{@{}l L L@{}}
+\toprule
+\textbf{Setting} & \textbf{Before} & \textbf{After} \\
+\midrule
+Order of strings & file order & sorted by length within each file, in chunks of 1,000 strings \\
+Batch size & 52 strings or $\sim$1,024 \emph{estimated} tokens & up to 1,024 \emph{real} tokens \\
+Execution & one batch at a time & all batches of a chunk queued, two engine workers \\
+Output length & unlimited & 2 $\times$ longest input + 10 tokens per batch \\
+Beam size & 5 & 2 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\keyresult{\textbf{RQ2.} Padding and batch layout are not the bottleneck: cutting padding from 30\% to 4\% gained 3\%.
+The real levers are the beam size (2.2\x{} for $-0.45$ chrF on KDE4) and keeping both cores busy (1.27\x{} with identical
+output). Together these are about 2.8\x{} faster in the benchmark.}

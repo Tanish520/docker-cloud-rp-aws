@@ -1,0 +1,67 @@
+\section{Datasets and Evaluation Setup}
+\label{sec:setup}
+
+\subsection{Datasets}
+Three workloads were used (Table~\ref{tab:datasets}). The main results use the KDE4 corpus~\cite{opus}, a collection of
+real user-interface strings from the KDE desktop software, prepared by the Track~1 team with reference translations in
+twelve languages.
+
+\begin{table}[H]
+\centering
+\caption[Datasets]{Datasets used in this report.}
+\label{tab:datasets}
+\begin{tabularx}{\linewidth}{@{}l l L@{}}
+\toprule
+\textbf{Dataset} & \textbf{Size} & \textbf{Used for} \\
+\midrule
+\code{.resx} workload & 3 files, 153 strings, 7 languages (1,071 translations) & first batching benchmark \\
+FLORES-200 dev~\cite{nllb} & first 40 sentences, 7 languages & quality check of beam sizes \\
+\textbf{KDE4} & 10,231 rows $\rightarrow$ \textbf{10,054 usable} strings, 12 languages & all main results \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\paragraph{KDE4 preparation.} The twelve target languages are Hindi (hi), Arabic (ar), Bengali (bn), German (de),
+Spanish (es), French (fr), Japanese (ja), Marathi (mr), Punjabi (pa), Tamil (ta), Telugu (te) and Chinese (zh). Of the
+10,231 rows, 177 were removed: one cell containing hundreds of strings joined by line breaks, two cells that the
+spreadsheet had converted to Boolean values, and duplicated English strings. The usable strings are short (median 13
+characters, about two words), typical of user-interface text. 355 of them contain placeholders such as \code{\%1},
+\code{\%s}, \code{\{name\}} or \code{<b>}.
+
+\paragraph{Reference translations.} Several signs suggest that the KDE4 reference translations were produced by machine
+rather than by KDE's human translators: every row is filled in all twelve languages, ``TRUE/FALSE'' appears as
+``WAHR/FALSCH'', and the references themselves drop \code{\%N} placeholders in 5--25\% of rows. chrF in this report
+therefore measures closeness to these references. Comparisons \emph{between} pipeline versions remain fair, because all
+versions are scored against the same references; the placeholder measure does not use the references at all.
+
+\subsection{Machine and Software}
+All measurements ran on the same AWS instance type: \textbf{m5.large} (2 vCPU Intel Xeon Platinum 8259CL, 8 GB RAM,
+on-demand price \$0.101 per hour in \code{ap-south-1}). The translation container is pinned to the machine's two cores.
+The model is \code{facebook/nllb-200-distilled-600M}, converted to CTranslate2 4.7.1 with INT8 weights.
+
+\subsection{Measures}
+\begin{table}[H]
+\centering
+\caption[Measures]{Measures reported in this report.}
+\label{tab:measures}
+\begin{tabularx}{\linewidth}{@{}l L@{}}
+\toprule
+\textbf{Measure} & \textbf{Meaning} \\
+\midrule
+Time, translations/hour & wall-clock time of the measured stage, and its throughput \\
+Speed-up & time of the reference configuration divided by time of the new one \\
+Model tokens & real tokens read and written by the model (tokenizer counts) \\
+Padding & share of the model's input positions filled with padding inside batches \\
+CPU busy & CPU time used divided by wall time $\times$ available cores \\
+chrF & character n-gram F-score~\cite{chrf} against the reference translations, computed with SacreBLEU~\cite{sacrebleu} (0--100, higher is better) \\
+Placeholders kept & share of strings with placeholders whose output contains exactly the same placeholders \\
+Cost & machine time $\times$ on-demand price \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Method}
+Every optimization was evaluated \textbf{one change at a time}, starting from the best configuration found so far, so that
+each gain can be traced to its cause. Changes that should not alter the output (batch layout, parallelism, length caps)
+were checked for \textbf{identical translations}. Changes that do alter the output (beam size, placeholder handling,
+translation reuse) were scored for quality before being adopted.
