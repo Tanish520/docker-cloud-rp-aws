@@ -146,7 +146,7 @@ def test_a_stopped_ready_runner_is_started_reused_and_stopped_again(run_on_ec2):
     result, calls, _, params = run_on_ec2(STUB_WARM="i-0warm")
     assert result.returncode == 0, result.stdout + result.stderr
     [find] = [c for c in calls if c.startswith("aws ec2 describe-instances")]
-    assert "Name=tag:cloud-loc-runner,Values=ready" in find and "Name=instance-state-name,Values=stopped" in find
+    assert "Name=tag:cloud-loc-runner,Values=ready" in find and "Name=instance-state-name,Values=stopping,stopped" in find
     assert any(c.startswith("aws ec2 start-instances") and "i-0warm" in c for c in calls)
     assert not any("run-instances" in c for c in calls)
     assert calls[-1].startswith("aws ec2 stop-instances") and "i-0warm" in calls[-1]
@@ -176,3 +176,12 @@ def test_the_workspace_is_cleaned_but_the_model_is_kept(run_on_ec2):
     unpack = command.index("tar -xz")
     restore = command.index("mv /opt/model-cache/nllb_ct2 aws/translator/nllb_ct2")
     assert keep < wipe < unpack < restore
+
+
+def test_a_ready_runner_still_shutting_down_is_waited_for_and_reused(run_on_ec2):
+    # A run started right after another found its runner still "stopping" and created a second one.
+    result, calls, _, _ = run_on_ec2(STUB_WARM="i-0warm")
+    assert result.returncode == 0, result.stdout + result.stderr
+    wait = [i for i, c in enumerate(calls) if c.startswith("aws ec2 wait instance-stopped") and "i-0warm" in c]
+    start = [i for i, c in enumerate(calls) if c.startswith("aws ec2 start-instances")]
+    assert wait and start and wait[0] < start[0]

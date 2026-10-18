@@ -55,10 +55,12 @@ git archive --format=tar.gz HEAD | aws s3 cp - "s3://$BUCKET/runs/$RUN_ID/source
 
 INSTANCE_ID=""
 if [ "$RUNNER_REUSE" = "true" ]; then
+  # A runner still shutting down from the previous run counts: wait for it rather than creating another.
   INSTANCE_ID="$(aws ec2 describe-instances --region "$REGION" --filters "Name=tag:cloud-loc-runner,Values=ready" \
-    "Name=instance-state-name,Values=stopped" --query 'Reservations[].Instances[].InstanceId' --output text | awk '{print $1}')"
+    "Name=instance-state-name,Values=stopping,stopped" --query 'Reservations[].Instances[].InstanceId' --output text | awk '{print $1}')"
 fi
 if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ]; then
+  aws ec2 wait instance-stopped --region "$REGION" --instance-ids "$INSTANCE_ID"
   echo "🖥️ Starting the ready runner $INSTANCE_ID (built image and model already on its disk)..."
   aws ec2 start-instances --region "$REGION" --instance-ids "$INSTANCE_ID" >/dev/null
 elif [ "$RUNNER_REUSE" = "true" ]; then
