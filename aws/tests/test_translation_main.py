@@ -28,6 +28,12 @@ class FakeAutoTokenizer:
 class FakeConn:
     closed = False
 
+    def cursor(self):
+        return self
+
+    def commit(self):
+        pass
+
     def close(self):
         self.closed = True
 
@@ -53,7 +59,7 @@ def translation(stub_modules, monkeypatch):
 def run_env(s3, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     for key, value in {"BUCKET": BUCKET, "RUN_ID": "run-1", "DB_HOST": "db.example",
-                       "DB_USER": "dbadmin", "DB_PASSWORD": "secret"}.items():
+                       "DB_USER": "dbadmin", "DB_PASSWORD": "secret", "TM_STORE": "sql"}.items():
         monkeypatch.setenv(key, value)
     config = tmp_path / "config.json"
     config.write_text("{}", encoding="utf-8")
@@ -387,7 +393,7 @@ def test_file_is_translated_in_chunks_of_similar_length(translation, monkeypatch
     monkeypatch.setattr(translation, "ENGINE_WORKERS", 1)                     # one batch per chunk, to see the chunks
     path = xlf_with(tmp_path, ["c c c", "a", "d d d d", "b b"])
 
-    asyncio.run(translation.process_xlf_file(str(path), "es-ES", RecordingConn(), None))
+    asyncio.run(translation.process_xlf_file(str(path), "es-ES", translation.SqlMemory(RecordingConn()), None))
 
     assert [sources for sources, _, _ in model.batches] == [["a", "b b"], ["c c c", "d d d d"]]
     assert targets(path) == ["C C C", "A", "D D D D", "B B"]
@@ -404,7 +410,7 @@ def test_long_strings_are_looked_up_and_saved_by_their_hash(translation, monkeyp
     long_text = " ".join(["word"] * 150)                                      # 749 characters
     path = xlf_with(tmp_path, ["short", long_text])
 
-    asyncio.run(translation.process_xlf_file(str(path), "es-ES", conn, None))
+    asyncio.run(translation.process_xlf_file(str(path), "es-ES", translation.SqlMemory(conn), None))
 
     [(query, params)] = conn.cursor_.queries
     assert params == ["es-ES", translation.engine_version()]
@@ -429,7 +435,7 @@ def test_untranslatable_strings_stay_empty_and_are_remembered_and_reported(trans
     conn = RecordingConn()
     path = xlf_with(tmp_path, ["crab", "Open"])
 
-    asyncio.run(translation.process_xlf_file(str(path), "zh-CN", conn, None))
+    asyncio.run(translation.process_xlf_file(str(path), "zh-CN", translation.SqlMemory(conn), None))
 
     assert targets(path) == [None, "打开"]                    # Phase 3 keeps the English for an empty target
     saved = {saved_source(row): row for row in conn.cursor_.saved}
@@ -457,8 +463,8 @@ def test_a_language_s_memory_is_loaded_once_per_run(translation, monkeypatch, tm
     first = xlf_with(tmp_path, ["Open", "Close"], "a.de-DE.xlf")
     second = xlf_with(tmp_path, ["Open", "Close", "Save"], "b.de-DE.xlf")
 
-    asyncio.run(translation.process_xlf_file(str(first), "de-DE", conn, None))
-    stats, *_ = asyncio.run(translation.process_xlf_file(str(second), "de-DE", conn, None))
+    asyncio.run(translation.process_xlf_file(str(first), "de-DE", translation.SqlMemory(conn), None))
+    stats, *_ = asyncio.run(translation.process_xlf_file(str(second), "de-DE", translation.SqlMemory(conn), None))
 
     [(query, params)] = conn.cursor_.queries                         # one database query for both files
     assert "SELECT SourceHash, SourceText, TranslatedText, ModelName" in query and "TargetLang=? AND EngineVersion=?" in query
@@ -475,7 +481,7 @@ def test_file_reports_lookup_and_real_token_counts(translation, monkeypatch, tmp
     monkeypatch.setattr(translation, "ENGINE_WORKERS", 1)                     # keep one batch to check padding
     path = xlf_with(tmp_path, ["a", "b b b"])
 
-    stats, *_ = asyncio.run(translation.process_xlf_file(str(path), "es-ES", RecordingConn(), None))
+    stats, *_ = asyncio.run(translation.process_xlf_file(str(path), "es-ES", translation.SqlMemory(RecordingConn()), None))
 
     extra = stats["extra"]
     assert extra["tm_db_queries"] == 1 and extra["tm_lookup_ms"] >= 0
@@ -494,7 +500,7 @@ def test_a_twin_of_a_memory_entry_is_adapted_without_the_model(translation, monk
     conn = RecordingConn(memory_rows=[(translation.tm_key("20 Cards"), "20 Cards", "20 Karten", "nllb-600M-ct2")])
     path = xlf_with(tmp_path, ["8 Cards", "Open"], "a.de-DE.xlf")
 
-    stats, *_ = asyncio.run(translation.process_xlf_file(str(path), "de-DE", conn, None))
+    stats, *_ = asyncio.run(translation.process_xlf_file(str(path), "de-DE", translation.SqlMemory(conn), None))
 
     assert targets(path) == ["8 Karten", "Öffnen"]
     assert model.seen == ["Open"]
@@ -507,7 +513,7 @@ def test_twins_in_one_file_go_to_the_model_once(translation, monkeypatch, tmp_pa
     model = use_model(translation, monkeypatch, german)
     path = xlf_with(tmp_path, ["20 Cards", "Border", "8 Cards", "Border:"], "a.de-DE.xlf")
 
-    stats, *_ = asyncio.run(translation.process_xlf_file(str(path), "de-DE", RecordingConn(), None))
+    stats, *_ = asyncio.run(translation.process_xlf_file(str(path), "de-DE", translation.SqlMemory(RecordingConn()), None))
 
     assert sorted(model.seen) == ["20 Cards", "Border"]
     assert targets(path) == ["20 Karten", "Rahmen", "8 Karten", "Rahmen:"]
@@ -518,7 +524,7 @@ def test_a_twin_that_cannot_be_adapted_goes_to_the_model(translation, monkeypatc
     model = use_model(translation, monkeypatch, lambda s: {"20 Cards": "٢٠ بطاقة", "8 Cards": "٨ بطاقات"}[s])
     path = xlf_with(tmp_path, ["20 Cards", "8 Cards"], "a.ar-SA.xlf")
 
-    stats, *_ = asyncio.run(translation.process_xlf_file(str(path), "ar-SA", RecordingConn(), None))
+    stats, *_ = asyncio.run(translation.process_xlf_file(str(path), "ar-SA", translation.SqlMemory(RecordingConn()), None))
 
     assert sorted(model.seen) == ["20 Cards", "8 Cards"]
     assert targets(path) == ["٢٠ بطاقة", "٨ بطاقات"]
@@ -530,7 +536,7 @@ def test_twin_reuse_can_be_switched_off(translation, monkeypatch, tmp_path):
     monkeypatch.setattr(translation, "TWIN_REUSE", False)
     path = xlf_with(tmp_path, ["20 Cards", "8 Cards"], "a.de-DE.xlf")
 
-    asyncio.run(translation.process_xlf_file(str(path), "de-DE", RecordingConn(), None))
+    asyncio.run(translation.process_xlf_file(str(path), "de-DE", translation.SqlMemory(RecordingConn()), None))
 
     assert sorted(model.seen) == ["20 Cards", "8 Cards"]
 
@@ -558,7 +564,7 @@ def test_a_remembered_kept_in_english_string_skips_the_model(translation, monkey
     conn = RecordingConn(memory_rows=[(translation.tm_key("crab"), "crab", "", "nllb-600M-ct2+english")])
     path = xlf_with(tmp_path, ["crab", "Open"], "a.zh-CN.xlf")
 
-    stats, *_ = asyncio.run(translation.process_xlf_file(str(path), "zh-CN", conn, None))
+    stats, *_ = asyncio.run(translation.process_xlf_file(str(path), "zh-CN", translation.SqlMemory(conn), None))
 
     assert model.seen == ["Open"]
     assert targets(path) == [None, "打开"]
@@ -571,7 +577,7 @@ def test_kept_in_english_entries_are_never_adapted_as_twins(translation, monkeyp
     conn = RecordingConn(memory_rows=[(translation.tm_key("crab 1"), "crab 1", "", "nllb-600M-ct2+english")])
     path = xlf_with(tmp_path, ["crab 2"], "a.zh-CN.xlf")
 
-    asyncio.run(translation.process_xlf_file(str(path), "zh-CN", conn, None))
+    asyncio.run(translation.process_xlf_file(str(path), "zh-CN", translation.SqlMemory(conn), None))
 
     assert model.seen == ["crab 2"]
 
@@ -593,3 +599,51 @@ def test_a_large_call_keeps_full_batches(translation, monkeypatch):
     translation.translate_local(["a b", "c d", "e f", "g h", "i j", "k l"], "es-ES")      # 12 tokens > 2 x 4
 
     assert [len(sources) for sources, _, _ in model.batches] == [2, 2, 2]
+
+
+def s3_memory(translation, s3, run_id):
+    import memory_store
+    return memory_store.S3Memory(s3, BUCKET, run_id, translation.engine_version())
+
+
+def test_translations_saved_to_s3_are_found_by_the_next_run(translation, monkeypatch, tmp_path, s3):
+    model = use_model(translation, monkeypatch, lambda s: s.upper())
+    first_file = xlf_with(tmp_path, ["Open", "8 Cards"], "a.de-DE.xlf")
+    first = s3_memory(translation, s3, "run-1")
+    asyncio.run(translation.process_xlf_file(str(first_file), "de-DE", first, None))
+    first.close()
+
+    translation.memory.clear()                                    # a new run starts with an empty dictionary
+    translation.twins.clear()
+    model.seen.clear()
+    second_file = xlf_with(tmp_path, ["Open", "20 Cards"], "b.de-DE.xlf")
+    stats, *_ = asyncio.run(translation.process_xlf_file(str(second_file), "de-DE", s3_memory(translation, s3, "run-2"), None))
+
+    assert model.seen == []                                       # exact hit + twin, both from S3
+    assert targets(second_file) == ["OPEN", "20 CARDS"]
+    assert stats["extra"]["tm_twin_hits"] == 1
+
+
+def test_s3_memory_needs_no_database(translation, run_env, s3, monkeypatch):
+    import memory_store
+    monkeypatch.setenv("TM_STORE", "s3")
+    put_raw(s3, "resx_file_10.es-ES.xlf")
+    monkeypatch.setattr(translation, "get_sql_connection", lambda conn_str: pytest.fail("no database in S3 mode"))
+    seen = []
+
+    async def processor(local_path, target_lang, memory, exporter):
+        seen.append(memory)
+        memory.save([memory_store.Entry(translation.tm_key("Hello"), target_lang, "Hello", "Hola", translation.MODEL_NAME)])
+        translation.profiler.add_segment_stats(tm_hit=False)
+        return {"total_api_time_ms": 1.0, "total_sql_time_ms": 1.0, "total_commit_time_ms": 1.0}, 1.0, 1.0, 5, 4
+
+    monkeypatch.setattr(translation, "process_xlf_file", processor)
+
+    assert run(translation, run_env) == 0
+    [memory] = seen
+    assert isinstance(memory, memory_store.S3Memory)
+    assert as_rows(memory_store.S3Memory(s3, BUCKET, "run-2", translation.engine_version()).load("es-ES")) == {"Hello": "Hola"}
+
+
+def as_rows(rows):
+    return {source: translation for _, source, translation, _ in rows}

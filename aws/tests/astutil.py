@@ -34,7 +34,7 @@ def shared_top_level(path, exclude=("main",)):
     for node in parse(path).body:
         if isinstance(node, (ast.Import, ast.ImportFrom)) or _is_main_guard(node):
             continue
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in exclude:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name in exclude:
             continue
         if any(_assigned_names(stmt) & set(exclude) for stmt in ast.walk(node)):
             continue

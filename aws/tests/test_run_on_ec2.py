@@ -185,3 +185,9 @@ def test_a_ready_runner_still_shutting_down_is_waited_for_and_reused(run_on_ec2)
     wait = [i for i, c in enumerate(calls) if c.startswith("aws ec2 wait instance-stopped") and "i-0warm" in c]
     start = [i for i, c in enumerate(calls) if c.startswith("aws ec2 start-instances")]
     assert wait and start and wait[0] < start[0]
+
+
+def test_memory_store_choice_reaches_the_machine(run_on_ec2):
+    result, _, _, params = run_on_ec2(TM_STORE="sql")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "TM_STORE=sql" in json.loads(params.read_text())["commands"][0]

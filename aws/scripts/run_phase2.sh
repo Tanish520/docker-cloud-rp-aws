@@ -11,6 +11,7 @@ set -euo pipefail
 : "${MODEL_KEY:?MODEL_KEY must be set}"
 PHASE2_CPUSET="${PHASE2_CPUSET:-0,1}"
 RESET_TM="${RESET_TM:-false}"
+export TM_STORE="${TM_STORE:-s3}"      # translation memory: s3 files (memory_store.py) or sql (RDS)
 PHASE2_TASK="${PHASE2_TASK:-translate}"   # translate | bench
 export BENCH_ARGS="${BENCH_ARGS:-}"      # extra batching_bench.py options, e.g. --kde4 s3://...
 export DB_NAME="${DB_NAME:-localization}"
@@ -24,7 +25,7 @@ MODEL_DIR="$TRANSLATOR_DIR/nllb_ct2"
 # -e NAME passes the host value through. The container reaches S3 with the build's IAM role
 # via the CodeBuild credentials endpoint (AWS_CONTAINER_CREDENTIALS_RELATIVE_URI).
 DOCKER_ENV=(-e RUN_ID -e BUCKET -e DB_HOST -e DB_USER -e DB_PASSWORD -e DB_NAME
-            -e AWS_REGION -e AWS_DEFAULT_REGION -e AWS_CONTAINER_CREDENTIALS_RELATIVE_URI -e TM_TWINS)
+            -e AWS_REGION -e AWS_DEFAULT_REGION -e AWS_CONTAINER_CREDENTIALS_RELATIVE_URI -e TM_TWINS -e TM_STORE)
 
 run_in_image() {
   docker run --rm "${DOCKER_ENV[@]}" -v "$TRANSLATOR_DIR:/app" "$IMAGE" "$@"
@@ -89,10 +90,13 @@ if [ "$PHASE2_TASK" = "bench" ]; then
   exit 0
 fi
 
-echo "🗄️ Preparing translation memory database..."
-run_in_image python db_admin.py init
-if [ "$(echo "$RESET_TM" | tr '[:upper:]' '[:lower:]')" = "true" ]; then
-  run_in_image python db_admin.py reset
+RESET="$(echo "$RESET_TM" | tr '[:upper:]' '[:lower:]')"
+if [ "$TM_STORE" = "sql" ]; then
+  echo "🗄️ Preparing translation memory database..."
+  run_in_image python db_admin.py init
+  if [ "$RESET" = "true" ]; then run_in_image python db_admin.py reset; fi
+elif [ "$RESET" = "true" ]; then
+  run_in_image python memory_store.py reset
 fi
 
 echo "🚀 Translating run $RUN_ID on cores $PHASE2_CPUSET..."

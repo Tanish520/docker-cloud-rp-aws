@@ -22,7 +22,7 @@ with open(os.environ["STUB_LOG"], "a") as log:
 sys.exit(int(os.environ.get("STUB_{upper}_EXIT", "0")))
 """
 PHASE2_SH = """#!/bin/bash
-echo "phase2 RUN_ID=$RUN_ID TWINS=${TM_TWINS:-on} MODEL_KEY=$MODEL_KEY DB_USER=$DB_USER DB_PASSWORD=$DB_PASSWORD RESET_TM=$RESET_TM CPUSET=$PHASE2_CPUSET REGION=$AWS_DEFAULT_REGION CONFIG=$PIPELINE_CONFIG TASK=${PHASE2_TASK:-}" >> "$STUB_LOG"
+echo "phase2 RUN_ID=$RUN_ID TWINS=${TM_TWINS:-on} STORE=$TM_STORE MODEL_KEY=$MODEL_KEY DB_USER=$DB_USER DB_PASSWORD=$DB_PASSWORD RESET_TM=$RESET_TM CPUSET=$PHASE2_CPUSET REGION=$AWS_DEFAULT_REGION CONFIG=$PIPELINE_CONFIG TASK=${PHASE2_TASK:-}" >> "$STUB_LOG"
 """
 
 
@@ -143,3 +143,9 @@ def test_a_plain_step_runs_without_twin_reuse(run_all):
     phase2 = [c for c in calls if c.startswith("phase2")]
     assert [c.split()[1:3] for c in phase2] == [["RUN_ID=ec2-test-v1", "TWINS=on"], ["RUN_ID=ec2-test-v4-cold", "TWINS=off"]]
     assert "RESET_TM=true" in phase2[1]
+
+
+def test_memory_store_defaults_to_s3(run_all):
+    result, calls = run_all()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "STORE=s3" in [c for c in calls if c.startswith("phase2")][0]

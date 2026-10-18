@@ -3,6 +3,7 @@
 # The last commit is uploaded to S3, the machine runs aws/runner/run_all.sh through SSM,
 # its output goes to CloudWatch Logs, and the machine is terminated afterwards.
 # Settings (environment variables): AWS_REGION, STACK_NAME, RESET_TM (default false: keep the translation memory),
+# TM_STORE (s3 = translation memory files in S3, default; sql = the RDS table),
 # PHASE2_CPUSET (default 0,1), RUNNER_POLL_SECONDS (default 20),
 # RUNNER_REUSE (default true: start the stopped "ready" runner, whose disk keeps the built image and the
 #   model, and stop it afterwards; false: a fresh machine that is terminated afterwards),
@@ -15,6 +16,7 @@ set -euo pipefail
 REGION="${AWS_REGION:-ap-south-1}"
 STACK_NAME="${STACK_NAME:-cloud-loc}"
 RESET_TM="${RESET_TM:-false}"
+TM_STORE="${TM_STORE:-s3}"
 PHASE2_CPUSET="${PHASE2_CPUSET:-0,1}"
 POLL="${RUNNER_POLL_SECONDS:-20}"
 RUNNER_TASK="${RUNNER_TASK:-pipeline}"
@@ -110,7 +112,7 @@ if [ -d /opt/run/aws/translator/nllb_ct2 ]; then rm -rf /opt/model-cache/nllb_ct
 rm -rf /opt/run && mkdir -p /opt/run && cd /opt/run
 aws s3 cp s3://$BUCKET/runs/$RUN_ID/source.tar.gz - --region $REGION | tar -xz
 if [ -d /opt/model-cache/nllb_ct2 ]; then mv /opt/model-cache/nllb_ct2 aws/translator/nllb_ct2; fi
-RUN_ID=$RUN_ID BUCKET=$BUCKET DB_HOST=$DB_HOST DB_SECRET_ARN='$DB_SECRET_ARN' AWS_REGION=$REGION RESET_TM=$RESET_TM PHASE2_CPUSET=$PHASE2_CPUSET RUNNER_TASK=$RUNNER_TASK BENCH_ARGS='$BENCH_ARGS' PIPELINE_CONFIG='$PIPELINE_CONFIG' INPUT_S3='$INPUT_S3' TM_STEPS='$TM_STEPS' TM_INPUT_PREFIX='$TM_INPUT_PREFIX' bash aws/runner/run_all.sh"
+RUN_ID=$RUN_ID BUCKET=$BUCKET DB_HOST=$DB_HOST DB_SECRET_ARN='$DB_SECRET_ARN' AWS_REGION=$REGION RESET_TM=$RESET_TM TM_STORE=$TM_STORE PHASE2_CPUSET=$PHASE2_CPUSET RUNNER_TASK=$RUNNER_TASK BENCH_ARGS='$BENCH_ARGS' PIPELINE_CONFIG='$PIPELINE_CONFIG' INPUT_S3='$INPUT_S3' TM_STEPS='$TM_STEPS' TM_INPUT_PREFIX='$TM_INPUT_PREFIX' bash aws/runner/run_all.sh"
 PARAMS="$(python3 -c 'import json, sys; print(json.dumps({"commands": [sys.argv[1]], "executionTimeout": [sys.argv[2]]}))' "$COMMAND" "$TIMEOUT")"
 
 CMD_ID="$(aws ssm send-command --region "$REGION" --instance-ids "$INSTANCE_ID" --document-name AWS-RunShellScript \

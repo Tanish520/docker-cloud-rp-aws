@@ -129,14 +129,21 @@ def test_translator_gets_the_chosen_config(run_phase2, tmp_path):
 def test_memory_is_kept_unless_a_reset_is_asked_for(run_phase2):
     _, kept = run_phase2()
     _, emptied = run_phase2(RESET_TM="true")
-    assert not any("db_admin.py reset" in c for c in kept)
-    assert any("db_admin.py reset" in c for c in emptied)
+    assert not any("reset" in c for c in kept)
+    assert any("memory_store.py reset" in c for c in emptied)
 
 
-def test_twin_setting_reaches_the_translator(run_phase2):
-    result, calls = run_phase2(TM_TWINS="off")
+def test_the_s3_memory_needs_no_database_set_up(run_phase2):
+    result, calls = run_phase2(RESET_TM="true")
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "-e TM_TWINS" in translation_call(calls)
+    assert not any("db_admin.py" in c for c in calls)
+    assert "-e TM_STORE" in translation_call(calls)
+
+
+def test_the_sql_memory_is_still_available(run_phase2):
+    _, calls = run_phase2(TM_STORE="sql", RESET_TM="true")
+    assert any("db_admin.py init" in c for c in calls) and any("db_admin.py reset" in c for c in calls)
+    assert not any("memory_store.py" in c for c in calls)
 
 
 def test_model_folder_is_not_copied_into_the_image():

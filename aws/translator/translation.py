@@ -24,6 +24,7 @@ from s3_store import RunStore
 from placeholders import protect, restore
 from batching import decoding_cap, plan_balanced
 from templates import adapt, template_of
+from memory_store import Entry, S3Memory
 from opencensus.ext.azure.log_exporter import AzureLogHandler
 from opencensus.ext.azure import metrics_exporter
 from opencensus.stats import aggregation as aggregation_module
@@ -190,8 +191,8 @@ def tm_key(text):
     return hashlib.sha256(text.encode("utf-8")).digest()
 
 # Translation memory for this run: target_lang -> {SourceHash: translation}. Each language is loaded from the
-# database in one query the first time it is needed; strings translated during the run are added as they are
-# saved, so later files reuse them without asking the database again.
+# memory store (S3 files or the SQL table) once, the first time it is needed; strings translated during the run
+# are added as they are saved, so later files reuse them without asking the store again.
 memory = {}
 twins = {}                    # target_lang -> {template_of(source): (source, translation)} of model translations
 added_in_run = set()          # (target_lang, SourceHash) of entries translated during this run
@@ -202,39 +203,70 @@ def reset_file_extra():
     file_extra.update({"tm_db_queries": 0, "tm_lookup_ms": 0.0, "tm_hits_in_run": 0, "tm_twin_hits": 0, "tm_kept_english": 0, "model_strings": 0,
                        "real_input_tokens": 0, "real_output_tokens": 0, "padded_positions": 0, "real_positions": 0})
 
-def load_memory(cursor, target_lang):
+class SqlMemory:
+    """Translation memory in the SQL Server table (db_admin.py), with the same interface as memory_store.S3Memory."""
+
+    MERGE = """
+        MERGE INTO Translations AS target
+        USING (SELECT ? AS SourceHash, ? AS TargetLang, ? AS EngineVersion) AS source
+        ON (target.SourceHash = source.SourceHash AND target.TargetLang = source.TargetLang
+            AND target.EngineVersion = source.EngineVersion)
+        WHEN MATCHED THEN UPDATE SET TranslatedText = ?
+        WHEN NOT MATCHED THEN INSERT (SourceHash, SourceText, TargetLang, EngineVersion, TranslatedText, ModelName, LastUpdated)
+        VALUES (?, ?, ?, ?, ?, ?, GETDATE());
+        """
+
+    def __init__(self, conn):
+        self.conn = conn
+        self.cursor = conn.cursor()
+
+    def load(self, target_lang):
+        self.cursor.execute("SELECT SourceHash, SourceText, TranslatedText, ModelName FROM Translations WHERE TargetLang=? AND EngineVersion=?",
+                            [target_lang, engine_version()])
+        return [(bytes(key), source, translation, model) for key, source, translation, model in self.cursor.fetchall()]
+
+    def save(self, entries):
+        version = engine_version()
+        self.cursor.fast_executemany = True
+        self.cursor.executemany(self.MERGE, [(e.key, e.lang, version, e.translation, e.key, e.source, e.lang, version,
+                                              e.translation, e.model) for e in entries])
+
+    def commit(self):
+        self.conn.commit()
+
+    def close(self):
+        self.conn.close()
+
+def load_memory(store, target_lang):
     profiler.counters["sql_reads"] += 1
     file_extra["tm_db_queries"] += 1
-    cursor.execute("SELECT SourceHash, SourceText, TranslatedText, ModelName FROM Translations WHERE TargetLang=? AND EngineVersion=?",
-                   [target_lang, engine_version()])
     known, index = {}, twins.setdefault(target_lang, {})
-    for key, source, translation, model_name in cursor.fetchall():
-        known[bytes(key)] = translation
-        if model_name == MODEL_NAME:              # adapt only from model translations, never from adapted ones
+    for key, source, translation, model_name in store.load(target_lang):
+        known[key] = translation
+        if model_name == MODEL_NAME and translation:   # adapt only from model translations, never from adapted ones
             index.setdefault(template_of(source), (source, translation))
     memory[target_lang] = known
 
 KEPT_ENGLISH = MODEL_NAME + "+english"   # saved with an empty translation: the model cannot write this string
 
 def remember(target_lang, source, translation, model_name):
-    """Add an entry to this run's memory and return its database row. model_name is MODEL_NAME (model
+    """Add an entry to this run's memory and return it for saving. model_name is MODEL_NAME (model
     translation), MODEL_NAME + "+twin" (adapted twin) or KEPT_ENGLISH (empty: keep the English)."""
     key = tm_key(source)
     memory.setdefault(target_lang, {})[key] = translation
     added_in_run.add((target_lang, key))
     if model_name == MODEL_NAME and translation:
         twins.setdefault(target_lang, {}).setdefault(template_of(source), (source, translation))
-    version = engine_version()
-    return (key, target_lang, version, translation, key, source, target_lang, version, translation, model_name)
+    return Entry(key, target_lang, source, translation, model_name)
 
-def bulk_query_translations(cursor, source_texts, target_lang):
+def bulk_query_translations(store, source_texts, target_lang):
     if not source_texts: return {}, 0
 
     profiler.start_timer("sql_read_latency")
     translations_map = {}
     try:
         if target_lang not in memory:
-            load_memory(cursor, target_lang)
+            load_memory(store, target_lang)
         known = memory[target_lang]
         for text in set(source_texts):
             key = tm_key(text)
@@ -248,26 +280,16 @@ def bulk_query_translations(cursor, source_texts, target_lang):
         print(f"❌ SQL Bulk Query Error: {e}")
         return {}, profiler.stop_timer("sql_read_latency")
 
-def bulk_save_translations(cursor, translation_tuples):
-    if not translation_tuples: return 0
-    
+def bulk_save_translations(store, entries):
+    if not entries: return 0
+
     profiler.counters["sql_writes"] += 1
     profiler.start_timer("sql_write_latency")
     try:
-        cursor.fast_executemany = True 
-        query = """
-        MERGE INTO Translations AS target
-        USING (SELECT ? AS SourceHash, ? AS TargetLang, ? AS EngineVersion) AS source
-        ON (target.SourceHash = source.SourceHash AND target.TargetLang = source.TargetLang
-            AND target.EngineVersion = source.EngineVersion)
-        WHEN MATCHED THEN UPDATE SET TranslatedText = ?
-        WHEN NOT MATCHED THEN INSERT (SourceHash, SourceText, TargetLang, EngineVersion, TranslatedText, ModelName, LastUpdated)
-        VALUES (?, ?, ?, ?, ?, ?, GETDATE());
-        """
-        cursor.executemany(query, translation_tuples)
+        store.save(entries)
         return profiler.stop_timer("sql_write_latency")
-    except Exception as e: 
-        print(f"❌ SQL Bulk Write Error: {e}")
+    except Exception as e:
+        print(f"❌ Translation memory write error: {e}")
         return profiler.stop_timer("sql_write_latency")
 
 # --- COMPLETELY REWRITTEN FOR CTRANSLATE2 PERFORMANCE ---
@@ -362,6 +384,7 @@ async def translate_local_async(texts, target_lang):
     return await asyncio.to_thread(translate_local, texts, target_lang)
 
 async def process_xlf_file(local_path, target_lang, conn, exporter):
+    # conn: the translation memory store (memory_store.S3Memory or SqlMemory)
     profiler.start_timer("xml_parse")
     try:
         tree = ET.parse(local_path)
@@ -370,7 +393,6 @@ async def process_xlf_file(local_path, target_lang, conn, exporter):
         xml_parse_ms = profiler.stop_timer("xml_parse")
     except ET.ParseError as e: return {"total_api_time_ms": 0, "total_sql_time_ms": 0, "total_commit_time_ms": 0}, 0, 0, 0, 0
     
-    cursor = conn.cursor()
     reset_file_extra()
     file_stats = {"total_api_time_ms": 0, "total_sql_time_ms": 0, "total_commit_time_ms": 0, "extra": file_extra}
     total_source_chars = total_translated_chars = 0  
@@ -382,7 +404,7 @@ async def process_xlf_file(local_path, target_lang, conn, exporter):
         if source_node is not None and source_node.text:
             all_source_texts.append(source_node.text)
 
-    translations_map, read_time = bulk_query_translations(cursor, all_source_texts, target_lang)
+    translations_map, read_time = bulk_query_translations(conn, all_source_texts, target_lang)
     remembered_english = []
     file_stats["total_sql_time_ms"] += read_time
     
@@ -477,7 +499,7 @@ async def process_xlf_file(local_path, target_lang, conn, exporter):
                     profiler.counters["total_output_tokens"] += output_tokens
 
             if db_write_batch:
-                write_time = bulk_save_translations(cursor, db_write_batch)
+                write_time = bulk_save_translations(conn, db_write_batch)
                 file_stats["total_sql_time_ms"] += write_time
 
             try:
@@ -544,7 +566,7 @@ async def process_xlf_file(local_path, target_lang, conn, exporter):
     await translate_units(retry)
 
     if twin_rows:
-        file_stats["total_sql_time_ms"] += bulk_save_translations(cursor, twin_rows)
+        file_stats["total_sql_time_ms"] += bulk_save_translations(conn, twin_rows)
         try:
             conn.commit()
         except Exception as e: print(f"⚠️ SQL Commit warning: {e}")
@@ -585,7 +607,12 @@ async def main(config_path):
         raw_container_name = store.raw_prefix
         
         profiler.start_timer("cold_start")
-        conn, _ = get_sql_connection(aws_runtime.sql_conn_str())
+        # Where the translation memory lives: TM_STORE=s3 (files, memory_store.py; default) or sql (RDS table).
+        if os.environ.get("TM_STORE", "s3") == "s3":
+            conn = S3Memory(store.client, store.bucket, store.run_id, engine_version())
+        else:
+            sql_conn, _ = get_sql_connection(aws_runtime.sql_conn_str())
+            conn = SqlMemory(sql_conn) if sql_conn else None
         cold_start_ms = profiler.stop_timer("cold_start")
         if not conn: 
             print("❌ Exiting due to SQL Connection Failure.")
