@@ -199,7 +199,7 @@ file_extra = {}               # per-file counters reported in RESEARCH_DATA (res
 
 def reset_file_extra():
     file_extra.clear()
-    file_extra.update({"tm_db_queries": 0, "tm_lookup_ms": 0.0, "tm_hits_in_run": 0, "tm_twin_hits": 0, "model_strings": 0,
+    file_extra.update({"tm_db_queries": 0, "tm_lookup_ms": 0.0, "tm_hits_in_run": 0, "tm_twin_hits": 0, "tm_kept_english": 0, "model_strings": 0,
                        "real_input_tokens": 0, "real_output_tokens": 0, "padded_positions": 0, "real_positions": 0})
 
 def load_memory(cursor, target_lang):
@@ -214,15 +214,18 @@ def load_memory(cursor, target_lang):
             index.setdefault(template_of(source), (source, translation))
     memory[target_lang] = known
 
-def remember(target_lang, source, translation, model_made):
+KEPT_ENGLISH = MODEL_NAME + "+english"   # saved with an empty translation: the model cannot write this string
+
+def remember(target_lang, source, translation, model_name):
+    """Add an entry to this run's memory and return its database row. model_name is MODEL_NAME (model
+    translation), MODEL_NAME + "+twin" (adapted twin) or KEPT_ENGLISH (empty: keep the English)."""
     key = tm_key(source)
     memory.setdefault(target_lang, {})[key] = translation
     added_in_run.add((target_lang, key))
-    if model_made:
+    if model_name == MODEL_NAME and translation:
         twins.setdefault(target_lang, {}).setdefault(template_of(source), (source, translation))
     version = engine_version()
-    return (key, target_lang, version, translation, key, source, target_lang, version, translation,
-            MODEL_NAME if model_made else MODEL_NAME + "+twin")
+    return (key, target_lang, version, translation, key, source, target_lang, version, translation, model_name)
 
 def bulk_query_translations(cursor, source_texts, target_lang):
     if not source_texts: return {}, 0
@@ -379,6 +382,7 @@ async def process_xlf_file(local_path, target_lang, conn, exporter):
             all_source_texts.append(source_node.text)
 
     translations_map, read_time = bulk_query_translations(cursor, all_source_texts, target_lang)
+    remembered_english = []
     file_stats["total_sql_time_ms"] += read_time
     
     for i, unit in enumerate(file_units):
@@ -389,7 +393,12 @@ async def process_xlf_file(local_path, target_lang, conn, exporter):
         total_source_chars += len(source_text)
         cached_trans = translations_map.get(source_text)
 
-        if cached_trans:
+        if cached_trans == "":
+            # Remembered as kept in English for this engine: leave the target empty (Phase 3 keeps the English).
+            profiler.add_segment_stats(tm_hit=True)
+            file_extra["tm_kept_english"] += 1
+            remembered_english.append(source_text)
+        elif cached_trans:
             profiler.add_segment_stats(tm_hit=True) 
             total_translated_chars += len(cached_trans) 
             
@@ -406,6 +415,9 @@ async def process_xlf_file(local_path, target_lang, conn, exporter):
         else:
             profiler.add_segment_stats(tm_hit=False) 
             missing_units.append((i, source_text))
+
+    if remembered_english:
+        print(f"⚠️ {len(remembered_english)} string(s) kept in English (remembered: the model has no characters for them): {remembered_english[:10]}")
 
     current_batch_texts = []
     current_batch_indices = []
@@ -439,6 +451,8 @@ async def process_xlf_file(local_path, target_lang, conn, exporter):
             untranslated = [src for src, trans in zip(current_batch_texts, translations) if trans == ""]
             if untranslated:
                 print(f"⚠️ {len(untranslated)} string(s) kept in English (the model has no characters for them): {untranslated[:10]}")
+                # Remembered for this engine version, so later runs skip the model for them.
+                db_write_batch.extend(remember(target_lang, src, "", KEPT_ENGLISH) for src in untranslated)
             for b_idx, trans in enumerate(translations):
                 if trans:
                     total_translated_chars += len(trans)
@@ -452,7 +466,7 @@ async def process_xlf_file(local_path, target_lang, conn, exporter):
                         target_node.text = trans
                     
                     src = current_batch_texts[b_idx]
-                    db_write_batch.append(remember(target_lang, src, trans, model_made=True))
+                    db_write_batch.append(remember(target_lang, src, trans, MODEL_NAME))
                     
                     multiplier = LANG_TOKEN_MULTIPLIERS.get(target_lang, 0.5)
                     output_tokens = len(trans) / (4.0 * multiplier)
@@ -492,7 +506,7 @@ async def process_xlf_file(local_path, target_lang, conn, exporter):
             target_node.text = translation
         total_translated_chars += len(translation)
         file_extra["tm_twin_hits"] += 1
-        twin_rows.append(remember(target_lang, source_text, translation, model_made=False))
+        twin_rows.append(remember(target_lang, source_text, translation, MODEL_NAME + "+twin"))
 
     if TWIN_REUSE:
         leaders, groups = [], set()

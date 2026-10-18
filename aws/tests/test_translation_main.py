@@ -423,7 +423,7 @@ def test_output_with_a_character_the_model_cannot_write_is_dropped(translation, 
     assert translations == ["", "", "打开"]
 
 
-def test_untranslatable_strings_stay_empty_are_not_saved_and_are_reported(translation, monkeypatch, tmp_path, capsys):
+def test_untranslatable_strings_stay_empty_and_are_remembered_and_reported(translation, monkeypatch, tmp_path, capsys):
     use_model(translation, monkeypatch, lambda s: {"crab": "<unk>", "Open": "打开"}[s])
     conn = RecordingConn()
     path = xlf_with(tmp_path, ["crab", "Open"])
@@ -431,7 +431,9 @@ def test_untranslatable_strings_stay_empty_are_not_saved_and_are_reported(transl
     asyncio.run(translation.process_xlf_file(str(path), "zh-CN", conn, None))
 
     assert targets(path) == [None, "打开"]                    # Phase 3 keeps the English for an empty target
-    assert [saved_source(row) for row in conn.cursor_.saved] == ["Open"]
+    saved = {saved_source(row): row for row in conn.cursor_.saved}
+    assert saved["Open"][3] == "打开"
+    assert saved["crab"][3] == "" and saved["crab"][-1] == "nllb-600M-ct2+english"   # remembered as kept in English
     assert "1 string(s) kept in English" in capsys.readouterr().out
 
 
@@ -546,3 +548,27 @@ def test_no_pause_between_files_without_an_azure_exporter(translation, run_env, 
 
     assert run(translation, run_env) == 0
     assert pauses == []
+
+
+def test_a_remembered_kept_in_english_string_skips_the_model(translation, monkeypatch, tmp_path, capsys):
+    # Same engine, same <unk>: retrying it only wasted model time (a third of a small commit's work).
+    model = use_model(translation, monkeypatch, lambda s: {"Open": "打开"}[s])
+    conn = RecordingConn(memory_rows=[(translation.tm_key("crab"), "crab", "", "nllb-600M-ct2+english")])
+    path = xlf_with(tmp_path, ["crab", "Open"], "a.zh-CN.xlf")
+
+    stats, *_ = asyncio.run(translation.process_xlf_file(str(path), "zh-CN", conn, None))
+
+    assert model.seen == ["Open"]
+    assert targets(path) == [None, "打开"]
+    assert stats["extra"]["tm_kept_english"] == 1
+    assert "1 string(s) kept in English (remembered" in capsys.readouterr().out
+
+
+def test_kept_in_english_entries_are_never_adapted_as_twins(translation, monkeypatch, tmp_path):
+    model = use_model(translation, monkeypatch, lambda s: {"crab 2": "螃蟹 2"}[s])
+    conn = RecordingConn(memory_rows=[(translation.tm_key("crab 1"), "crab 1", "", "nllb-600M-ct2+english")])
+    path = xlf_with(tmp_path, ["crab 2"], "a.zh-CN.xlf")
+
+    asyncio.run(translation.process_xlf_file(str(path), "zh-CN", conn, None))
+
+    assert model.seen == ["crab 2"]

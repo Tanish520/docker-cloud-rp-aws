@@ -38,7 +38,7 @@ def test_translation_shared_code_is_identical():
                "CHUNK_SIZE", "BEAM_SIZE", "ENGINE_WORKERS", "LANG_TOKEN_MULTIPLIERS",
                "tm_key", "engine_version", "bulk_query_translations", "bulk_save_translations",
                "memory", "added_in_run", "file_extra", "reset_file_extra", "load_memory",
-               "twins", "remember", "MODEL_NAME", "TWIN_REUSE")
+               "twins", "remember", "MODEL_NAME", "TWIN_REUSE", "KEPT_ENGLISH")
     assert shared_top_level(AWS_TRANSLATION, exclude) == shared_top_level(AZ_TRANSLATION, exclude)
 
 

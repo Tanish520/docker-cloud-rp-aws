@@ -91,6 +91,6 @@ def test_collect_reads_every_line_of_a_batched_event():
 
 
 def test_memory_and_real_token_counters_are_exported():
-    for field in ("tm_db_queries", "tm_lookup_ms", "tm_hits_in_run", "tm_twin_hits", "model_strings",
+    for field in ("tm_db_queries", "tm_lookup_ms", "tm_hits_in_run", "tm_twin_hits", "tm_kept_english", "model_strings",
                   "real_input_tokens", "real_output_tokens", "padding_pct"):
         assert field in et.AWS_FIELDS

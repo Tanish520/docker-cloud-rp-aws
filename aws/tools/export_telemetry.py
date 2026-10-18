@@ -26,7 +26,7 @@ AZURE_FIELDS = [
 AWS_FIELDS = ["cloud_provider", "region", "run_id", "cpu_limit", "cpu_model", "host_cpu_count",
               "omp_num_threads",
               # translation memory and real model tokens (translation.py file_extra)
-              "tm_db_queries", "tm_lookup_ms", "tm_hits_in_run", "tm_twin_hits", "model_strings",
+              "tm_db_queries", "tm_lookup_ms", "tm_hits_in_run", "tm_twin_hits", "tm_kept_english", "model_strings",
               "real_input_tokens", "real_output_tokens", "padding_pct"]
 
 
