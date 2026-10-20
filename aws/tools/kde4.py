@@ -4,6 +4,10 @@
     python tools/kde4.py versions Dataset-Translated.xlsx <folder>      # app versions for the memory experiment
     python tools/kde4.py score    Dataset-Translated.xlsx <downloaded runs/<id>/output/> --out scores.json
     python tools/kde4.py score    Dataset-Translated.xlsx <output/> --version <folder>/kde4tm-v2-r1.resx
+    python tools/kde4.py score    Dataset-Translated.xlsx <output/> --comet 1000   # also COMET on 1,000 strings per language
+
+Scores: chrF, BLEU (13a; zh and ja with their own word splitting), spBLEU (FLORES-200 SentencePiece, the usual
+BLEU for NLLB across languages), placeholders kept, and optionally COMET (Unbabel/wmt22-comet-da) on a fixed sample.
 
 All steps use the same cleaned rows (batching_bench.clean_kde4), so entry KDE4_<i> is row i.
 """
@@ -21,6 +25,27 @@ from batching_bench import chrf, clean_kde4, placeholder_kept_fraction, read_kde
 LOCALES = {"hi": "hi-IN", "ar": "ar-SA", "bn": "bn-IN", "de": "de-DE", "es": "es-ES", "fr": "fr-FR",
            "ja": "ja-JP", "mr": "mr-IN", "pa": "pa-IN", "ta": "ta-IN", "te": "te-IN", "zh": "zh-CN"}
 RESX_NAME = "kde4.resx"
+SPBLEU_TOKENIZE = "flores200"
+COMET_MODEL = "Unbabel/wmt22-comet-da"
+
+
+def bleu_tokenizer(lang):
+    """Word splitting for BLEU: SacreBLEU's default, except Chinese and Japanese, which have no spaces."""
+    if lang == "zh":
+        return "zh"
+    if lang == "ja":
+        try:
+            from sacrebleu.tokenizers.tokenizer_ja_mecab import TokenizerJaMecab
+            TokenizerJaMecab()
+            return "ja-mecab"
+        except Exception:
+            return "char"
+    return "13a"
+
+
+def bleu(outputs, refs, tokenize):
+    import sacrebleu
+    return round(sacrebleu.corpus_bleu(outputs, [refs], tokenize=tokenize).score, 2)
 
 
 def write_resx(items, path, keys=None):
@@ -69,14 +94,45 @@ def score(items, langs, output_dir, keys=None, resx_name=RESX_NAME):
         outputs = [found.get(f"KDE4_{k}") or "" for k in keys]
         refs = [items[k][1][lang] for k in keys]
         per_language[lang] = {"strings": len(keys), "missing": sum(not o for o in outputs),
-                              "chrf": chrf(outputs, refs), "placeholders_kept": placeholder_kept_fraction(sources, outputs)}
+                              "chrf": chrf(outputs, refs), "placeholders_kept": placeholder_kept_fraction(sources, outputs),
+                              "bleu": bleu(outputs, refs, bleu_tokenizer(lang)), "bleu_tokenizer": bleu_tokenizer(lang),
+                              "spbleu": bleu(outputs, refs, SPBLEU_TOKENIZE)}
         all_out += outputs
         all_refs += refs
         all_src += sources
     return {"strings": len(keys), "languages": langs, "translations": len(all_out),
             "missing": sum(p["missing"] for p in per_language.values()),
             "chrf_all": chrf(all_out, all_refs), "placeholders_kept_all": placeholder_kept_fraction(all_src, all_out),
+            "spbleu_all": bleu(all_out, all_refs, SPBLEU_TOKENIZE),
+            "bleu_mean": round(sum(p["bleu"] for p in per_language.values()) / len(per_language), 2),
             "per_language": per_language}
+
+
+def comet_predict(rows, batch_size=64):
+    from comet import download_model, load_from_checkpoint
+    model = load_from_checkpoint(download_model(COMET_MODEL))
+    # num_workers=1: COMET sets a multiprocessing context, which recent PyTorch rejects with no worker processes.
+    return model.predict(rows, batch_size=batch_size, gpus=0, num_workers=1, progress_bar=True).scores
+
+
+def comet_scores(items, langs, output_dir, per_language=1000, keys=None, resx_name=RESX_NAME, predict=None, seed=2026):
+    """COMET on the same fixed random sample of strings in every language (all strings if fewer)."""
+    keys = list(keys) if keys is not None else list(range(len(items)))
+    chosen = sorted(random.Random(seed).sample(keys, min(per_language, len(keys))))
+    rows, owner = [], []
+    for lang in langs:
+        found = read_output(os.path.join(output_dir, LOCALES[lang], resx_name))
+        for k in chosen:
+            rows.append({"src": items[k][0], "mt": found.get(f"KDE4_{k}") or "", "ref": items[k][1][lang]})
+            owner.append(lang)
+    scores = list((predict or comet_predict)(rows))
+    per_lang = {}
+    for lang in langs:
+        mine = [s for s, o in zip(scores, owner) if o == lang]
+        per_lang[lang] = {"strings": len(mine), "comet": round(sum(mine) / len(mine), 4)}
+    return {"model": COMET_MODEL, "sample_per_language": len(chosen), "seed": seed, "per_language": per_lang,
+            "comet_mean": round(sum(v["comet"] for v in per_lang.values()) / len(per_lang), 4),
+            "comet_all": round(sum(scores) / len(scores), 4)}
 
 
 def main(argv=None):
@@ -86,6 +142,7 @@ def main(argv=None):
     parser.add_argument("target", help="resx: the .resx to write; versions: the folder to write; score: the downloaded output folder")
     parser.add_argument("--version", help="score: only the rows in this version file (kde4tm-<name>.resx)")
     parser.add_argument("--out", help="score: also write the report here as JSON")
+    parser.add_argument("--comet", type=int, default=0, help="score: also COMET on this many strings per language")
     args = parser.parse_args(argv)
 
     langs, rows = read_kde4(args.xlsx)
@@ -98,11 +155,12 @@ def main(argv=None):
         manifest = write_versions(items, args.target)
         print(f"Wrote {len(manifest)} versions to {args.target}: " + ", ".join(f"{n} ({len(v['keys'])} strings, {v['new']} new)" for n, v in manifest.items()))
         return 0
+    keys, resx_name = None, RESX_NAME
     if args.version:
-        keys = [int(name.split("_")[1]) for name in read_output(args.version)]
-        report = score(items, langs, args.target, keys=keys, resx_name="kde4tm.resx")
-    else:
-        report = score(items, langs, args.target)
+        keys, resx_name = [int(name.split("_")[1]) for name in read_output(args.version)], "kde4tm.resx"
+    report = score(items, langs, args.target, keys=keys, resx_name=resx_name)
+    if args.comet:
+        report["comet"] = comet_scores(items, langs, args.target, per_language=args.comet, keys=keys, resx_name=resx_name)
     print(json.dumps(report, indent=2, ensure_ascii=False))
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:

@@ -26,19 +26,22 @@ def write_output(folder, locale, values):
     kde4.write_resx([(v, {}) for v in values], folder / locale / "kde4.resx")
 
 
-def test_output_is_scored_per_language_against_the_spreadsheet(tmp_path):
+def test_output_is_scored_per_language_against_the_spreadsheet(tmp_path, monkeypatch):
+    monkeypatch.setattr(kde4, "SPBLEU_TOKENIZE", "char")
     write_output(tmp_path, "de-DE", ["Öffne %1", "<b>Datei</b> speichern"])          # same as the references
     write_output(tmp_path, "fr-FR", ["Ouvrir", "Enregistrer <b>fichier</b>"])       # %1 lost
 
     report = kde4.score(ITEMS, ["de", "fr"], tmp_path)
 
-    assert report["per_language"]["de"] == {"strings": 2, "missing": 0, "chrf": 100.0, "placeholders_kept": 1.0}
+    de = report["per_language"]["de"]
+    assert {k: de[k] for k in ("strings", "missing", "chrf", "placeholders_kept")} == {"strings": 2, "missing": 0, "chrf": 100.0, "placeholders_kept": 1.0}
     assert report["per_language"]["fr"]["placeholders_kept"] == 0.5
     assert report["per_language"]["fr"]["chrf"] < 100
     assert report["translations"] == 4 and report["placeholders_kept_all"] == 0.75
 
 
-def test_a_missing_output_file_or_string_is_counted(tmp_path):
+def test_a_missing_output_file_or_string_is_counted(tmp_path, monkeypatch):
+    monkeypatch.setattr(kde4, "SPBLEU_TOKENIZE", "char")
     write_output(tmp_path, "de-DE", ["Öffne %1"])
 
     report = kde4.score(ITEMS, ["de", "fr"], tmp_path)
@@ -66,7 +69,8 @@ def test_versions_add_new_strings_never_seen_in_another_version(tmp_path):
     assert len(values) == 11 and all(values[f"KDE4_{k}"] == f"String {k}" for k in manifest["v2-r1"]["keys"])
 
 
-def test_a_version_is_scored_on_its_own_strings_only(tmp_path):
+def test_a_version_is_scored_on_its_own_strings_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(kde4, "SPBLEU_TOKENIZE", "char")
     keys = [1]
     (tmp_path / "de-DE").mkdir()
     kde4.write_resx([ITEMS[1]], tmp_path / "de-DE" / "kde4tm.resx", keys=keys)
@@ -77,3 +81,38 @@ def test_a_version_is_scored_on_its_own_strings_only(tmp_path):
     report = kde4.score(ITEMS, ["de"], tmp_path, keys=keys, resx_name="kde4tm.resx")
 
     assert report["strings"] == 1 and report["per_language"]["de"]["missing"] == 0
+
+
+def test_bleu_uses_word_splitting_suited_to_each_language():
+    assert kde4.bleu_tokenizer("de") == "13a"
+    assert kde4.bleu_tokenizer("zh") == "zh"
+    assert kde4.bleu_tokenizer("ja") in ("ja-mecab", "char")      # MeCab when installed, else characters
+
+
+def test_perfect_output_scores_100_bleu_and_spbleu(tmp_path, monkeypatch):
+    monkeypatch.setattr(kde4, "SPBLEU_TOKENIZE", "char")         # tests stay offline; the real run uses flores200
+    write_output(tmp_path, "de-DE", ["Öffne %1", "<b>Datei</b> speichern"])
+
+    report = kde4.score(ITEMS, ["de"], tmp_path)
+
+    assert report["per_language"]["de"]["bleu"] == 100.0
+    assert report["per_language"]["de"]["spbleu"] == 100.0
+    assert report["spbleu_all"] == 100.0
+
+
+def test_comet_is_scored_on_a_fixed_sample_per_language(tmp_path):
+    write_output(tmp_path, "de-DE", ["Öffne %1", "<b>Datei</b> speichern"])
+    write_output(tmp_path, "fr-FR", ["Ouvrir", "Enregistrer <b>fichier</b>"])
+    seen = []
+
+    def fake_comet(rows):
+        seen.extend(rows)
+        return [0.9 if r["mt"].startswith("Ö") or r["mt"].startswith("<b>") else 0.5 for r in rows]
+
+    report = kde4.comet_scores(ITEMS, ["de", "fr"], tmp_path, per_language=1, predict=fake_comet)
+
+    assert len(seen) == 2 and {"src", "mt", "ref"} <= set(seen[0])
+    assert set(report["per_language"]) == {"de", "fr"} and report["per_language"]["de"]["strings"] == 1
+    again = kde4.comet_scores(ITEMS, ["de", "fr"], tmp_path, per_language=1, predict=fake_comet)
+    assert again == report                                        # the same sample every time
+    assert report["comet_mean"] == round(sum(v["comet"] for v in report["per_language"].values()) / 2, 4)
