@@ -672,3 +672,16 @@ def test_twin_source_does_not_depend_on_the_order_the_store_returns_entries(tran
         chosen.append(translation.twins["de-DE"][translation.template_of("5 Cards")])
 
     assert chosen[0] == chosen[1]
+
+
+def test_the_s3_memory_of_every_language_in_the_run_is_prefetched(translation, run_env, s3, monkeypatch):
+    import memory_store
+    monkeypatch.setenv("TM_STORE", "s3")
+    put_raw(s3, "resx_file_10.es-ES.xlf")
+    put_raw(s3, "resx_file_10.fr-FR.xlf")
+    prefetched = []
+    monkeypatch.setattr(memory_store.S3Memory, "prefetch", lambda self, langs: prefetched.extend(langs))
+    monkeypatch.setattr(translation, "process_xlf_file", fake_processor(translation))
+
+    assert run(translation, run_env) == 0
+    assert sorted(prefetched) == ["es-ES", "fr-FR"]

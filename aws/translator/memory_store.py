@@ -18,6 +18,7 @@ import json
 import os
 import re
 import sys
+import threading
 from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 
@@ -61,13 +62,43 @@ class S3Memory:
         self.commits = {}            # lang -> files written by this run
         self.reads = 0               # S3 objects read
         self._engine_named = False
+        self._lock = threading.Lock()
+        self._prefetched = {}        # lang -> Future of a background load (prefetch)
+        self._loader = None
+        self._uploader = ThreadPoolExecutor(max_workers=4)
+        self._uploads = []           # (key, Future) of background uploads not yet confirmed by close()
 
     def _get(self, key):
-        self.reads += 1          # an int increment is atomic enough for a request counter
+        with self._lock:
+            self.reads += 1
         return self.client.get_object(Bucket=self.bucket, Key=key)["Body"].read()
+
+    def prefetch(self, langs):
+        """Start loading these languages in the background, all at once, so that each is ready when the run
+        reaches it: one S3 round trip for the whole run instead of one per language."""
+        langs = [lang for lang in langs if lang not in self._prefetched]
+        if not langs:
+            return
+        if self._loader is None:
+            self._loader = ThreadPoolExecutor(max_workers=min(16, len(langs)))
+        for lang in langs:
+            self._prefetched[lang] = self._loader.submit(self._load_now, lang)
+
+    def wait_for_prefetch(self):
+        for future in list(self._prefetched.values()):
+            future.exception()
 
     def load(self, lang):
         """[(SourceHash bytes, source, translation, model)] for one language of this engine version."""
+        future = self._prefetched.pop(lang, None)
+        if future is not None:
+            try:
+                return future.result()
+            except Exception as e:
+                print(f"⚠️ Prefetch of the {lang} translation memory failed ({e}); loading it now.")
+        return self._load_now(lang)
+
+    def _load_now(self, lang):
         folder = f"{self.root}/{lang}/"
         keys = _list(self.client, self.bucket, folder)
         bases = sorted((int(m.group(1)), k) for k in keys if (m := BASE.search(k)))
@@ -120,17 +151,29 @@ class S3Memory:
             self.pending.setdefault(entry.lang, []).append(entry)
 
     def commit(self):
+        """Upload what was saved since the last commit, in the background; close() confirms the uploads."""
         for lang, entries in self.pending.items():
             if not entries:
                 continue
             number = self.commits.get(lang, 0) + 1
             self.commits[lang] = number
-            self.client.put_object(Bucket=self.bucket, Key=f"{self.root}/{lang}/runs/{self.run_id}-{number:04d}.jsonl.gz",
-                                   Body=encode_lines([_record(e) for e in entries]))
+            key = f"{self.root}/{lang}/runs/{self.run_id}-{number:04d}.jsonl.gz"
+            body = encode_lines([_record(e) for e in entries])
+            self._uploads.append((key, self._uploader.submit(self.client.put_object, Bucket=self.bucket, Key=key, Body=body)))
         self.pending = {}
 
     def close(self):
+        """Commit, wait for every background upload, and return how many failed (each is printed)."""
         self.commit()
+        failed = 0
+        for key, future in self._uploads:
+            try:
+                future.result()
+            except Exception as e:
+                failed += 1
+                print(f"❌ Could not save translation memory file s3://{self.bucket}/{key}: {e}")
+        self._uploads = []
+        return failed
 
 
 def reset(client, bucket, prefix="memory"):

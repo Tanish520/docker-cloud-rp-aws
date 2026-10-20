@@ -31,6 +31,7 @@ def test_saved_entries_are_found_by_the_next_run(s3):
     first = memory(s3, "run-1")
     first.save([entry("Open", "Öffnen"), entry("Close", "Schließen")])
     first.commit()
+    first.close()
 
     rows = memory(s3, "run-2").load("de-DE")
 
@@ -43,6 +44,7 @@ def test_entries_wait_for_commit_and_languages_are_kept_apart(s3):
     run.save([entry("Open", "Öffnen"), entry("Open", "Ouvrir", lang="fr-FR")])
     assert memory(s3, "run-2").load("de-DE") == []
     run.commit()
+    run.close()
 
     assert as_dict(memory(s3, "run-2").load("fr-FR")) == {"Open": ("Ouvrir", "nllb-600M-ct2")}
 
@@ -62,6 +64,8 @@ def test_two_runs_writing_at_the_same_time_lose_nothing(s3):
     b.save([entry("Close", "Schließen")])
     a.commit()
     b.commit()
+    a.close()
+    b.close()
 
     assert set(as_dict(memory(s3, "run-c").load("de-DE"))) == {"Open", "Close"}
 
@@ -70,7 +74,7 @@ def test_a_later_run_overrides_an_earlier_one(s3):
     for run_id, translation in (("run-1", "Öffne"), ("run-2", "Öffnen")):
         run = memory(s3, run_id)
         run.save([entry("Open", translation)])
-        run.commit()
+        run.close()
 
     assert as_dict(memory(s3, "run-3").load("de-DE"))["Open"][0] == "Öffnen"
 
@@ -78,7 +82,7 @@ def test_a_later_run_overrides_an_earlier_one(s3):
 def test_kept_in_english_entries_round_trip(s3):
     run = memory(s3)
     run.save([entry("crab", "", lang="zh-CN", model="nllb-600M-ct2+english")])
-    run.commit()
+    run.close()
 
     assert as_dict(memory(s3, "run-2").load("zh-CN")) == {"crab": ("", "nllb-600M-ct2+english")}
 
@@ -89,6 +93,7 @@ def test_each_commit_of_a_run_writes_a_new_file(s3):
     run.commit()
     run.save([entry("Close", "Schließen")])
     run.commit()
+    run.close()
 
     assert len(run_files(s3, "de-DE")) == 2
     assert set(as_dict(memory(s3, "run-2").load("de-DE"))) == {"Open", "Close"}
@@ -108,7 +113,7 @@ def fill_runs(s3, count, start=0):
     for i in range(start, start + count):
         run = memory(s3, f"run-{i:03d}")
         run.save([entry(f"String {i}", f"Zeile {i}")])
-        run.commit()
+        run.close()
 
 
 def test_many_run_files_are_merged_into_a_new_base(s3, monkeypatch):
@@ -184,6 +189,7 @@ def test_files_are_compressed_json_lines(s3):
     run = memory(s3)
     run.save([entry("Open", "Öffnen")])
     run.commit()
+    run.close()
 
     [name] = run_files(s3, "de-DE")
     body = gzip.decompress(s3.get_object(Bucket=BUCKET, Key=name)["Body"].read()).decode("utf-8")
@@ -201,6 +207,7 @@ def test_reset_empties_the_memory(s3):
     run = memory(s3)
     run.save([entry("Open", "Öffnen")])
     run.commit()
+    run.close()
 
     ms.reset(s3, BUCKET)
 
@@ -212,6 +219,82 @@ def test_reads_are_counted(s3):
     run = memory(s3)
     run.save([entry("Open", "Öffnen")])
     run.commit()
+    run.close()
     reader = memory(s3, "run-2")
     reader.load("de-DE")
     assert reader.reads >= 1
+
+
+def saved(s3, *pairs, run_id="run-1"):
+    run = memory(s3, run_id)
+    run.save([entry(source, translation, lang=lang) for lang, source, translation in pairs])
+    run.commit()
+    run.close()
+
+
+def test_prefetched_languages_are_served_without_waiting_for_s3(s3):
+    saved(s3, ("de-DE", "Open", "Öffnen"), ("fr-FR", "Open", "Ouvrir"))
+    reader = memory(s3, "run-2")
+
+    reader.prefetch(["de-DE", "fr-FR"])
+    reader.wait_for_prefetch()
+    reads = reader.reads
+
+    assert as_dict(reader.load("de-DE")) == {"Open": ("Öffnen", "nllb-600M-ct2")}
+    assert as_dict(reader.load("fr-FR")) == {"Open": ("Ouvrir", "nllb-600M-ct2")}
+    assert reader.reads == reads                                  # both answered from the prefetch
+
+
+class FailsFirstList:
+    """An S3 client whose first listing fails, as a prefetch might on a network error."""
+
+    def __init__(self, client):
+        self.client, self.failed = client, False
+
+    def get_paginator(self, name):
+        if not self.failed:
+            self.failed = True
+            raise RuntimeError("network error")
+        return self.client.get_paginator(name)
+
+    def __getattr__(self, name):
+        return getattr(self.client, name)
+
+
+def test_a_failed_prefetch_falls_back_to_a_normal_load(s3):
+    saved(s3, ("de-DE", "Open", "Öffnen"))
+    reader = ms.S3Memory(FailsFirstList(s3), BUCKET, "run-2", ENGINE)
+
+    reader.prefetch(["de-DE"])
+
+    assert as_dict(reader.load("de-DE")) == {"Open": ("Öffnen", "nllb-600M-ct2")}
+
+
+def test_uploads_run_in_the_background_and_close_waits_for_them(s3):
+    run = memory(s3)
+    run.save([entry("Open", "Öffnen")])
+    run.commit()
+    assert run.close() == 0
+    assert as_dict(memory(s3, "run-2").load("de-DE")) == {"Open": ("Öffnen", "nllb-600M-ct2")}
+
+
+class FailsUploads:
+    def __init__(self, client):
+        self.client = client
+
+    def put_object(self, **kwargs):
+        if "/runs/" in kwargs["Key"]:
+            raise RuntimeError("upload failed")
+        return self.client.put_object(**kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self.client, name)
+
+
+def test_a_failed_background_upload_is_reported_by_close(s3, capsys):
+    run = ms.S3Memory(FailsUploads(s3), BUCKET, "run-1", ENGINE)
+    run.save([entry("Open", "Öffnen")])
+    run.commit()
+
+    assert run.close() == 1
+    assert "upload failed" in capsys.readouterr().out

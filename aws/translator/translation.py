@@ -643,6 +643,10 @@ async def main(config_path):
                 logger.error(f"❌ Run {store.run_id} has no raw or translated files. Did Phase 1 run for this RUN_ID?")
         else:
             logger.info(f"🔎 Found {len(blobs)} files in '{raw_container_name}'.")
+            # Load every language's memory at once in the background, so each is ready when its file comes up.
+            if hasattr(conn, "prefetch"):
+                conn.prefetch(sorted({b.name.split('.')[-2] for b in blobs
+                                      if b.name.lower().endswith('.xlf') and len(b.name.split('.')) >= 3}))
 
         for blob in blobs:
             if blob.name.lower().endswith('.xlf'):
@@ -784,7 +788,11 @@ async def main(config_path):
         failures += 1
         logger.error(f"❌ Pipeline Failure: {e}")
 
-    if conn: conn.close()
+    if conn:
+        # S3: waits for the background uploads of new memory entries and reports any that failed.
+        failed_saves = conn.close()
+        if failed_saves:
+            logger.error(f"❌ {failed_saves} translation memory file(s) could not be saved; those strings will be translated again next run.")
     
     print("⏳ Finalizing telemetry...")
     logging.shutdown()
