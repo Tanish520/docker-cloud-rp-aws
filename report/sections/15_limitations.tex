@@ -12,8 +12,9 @@
         a median length of two words. Longer text would change absolute times, not the conclusions about what dominates them.
   \item \textbf{Experiment size.} The memory experiment used a 2,000-string application, in which near-twins are rarer
         than in the full corpus (1.5\% against 5.2\%).
-  \item \textbf{Metric coverage.} This report uses chrF and placeholder survival; BLEU, ROUGE-L, METEOR and COMET are
-        computed by Track~1.
+  \item \textbf{Metric coverage.} COMET was computed on a fixed 1,000-string sample per language (12,000 translations)
+        rather than all 120,648, because CPU scoring of the full set takes several hours. The benchmark runs recorded chrF
+        only. ROUGE-L and METEOR are computed by Track~1.
 \end{itemize}
 
 \subsection{Future Work}

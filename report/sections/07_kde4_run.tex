@@ -16,28 +16,59 @@ The run succeeded: 12 of 12 language files, \textbf{0 failures, 0 missing string
 
 \begin{table}[H]
 \centering
-\caption[Full KDE4 run per language]{Full KDE4 run per language: 10,054 strings per language.}
+\caption[Full KDE4 run per language: speed]{Full KDE4 run per language: speed and placeholder survival, 10,054 strings per language.}
 \label{tab:kde4run}
-\begin{tabular}{@{}l S[table-format=2.2] S[table-format=5.0] S[table-format=2.2] S[table-format=3.2]@{}}
+\begin{tabular}{@{}l S[table-format=2.2] S[table-format=5.0] S[table-format=3.2]@{}}
 \toprule
-\textbf{Language} & {\textbf{Time (min)}} & {\textbf{Translations/hour}} & {\textbf{chrF}} & {\textbf{Placeholders kept (\%)}} \\
+\textbf{Language} & {\textbf{Time (min)}} & {\textbf{Translations/hour}} & {\textbf{Placeholders kept (\%)}} \\
 \midrule
-Arabic (ar) & 18.28 & 32991 & 55.42 & 99.72 \\
-Bengali (bn) & 18.38 & 32828 & 64.38 & 100.00 \\
-German (de) & 17.83 & 33841 & 64.22 & 99.44 \\
-Spanish (es) & 17.62 & 34232 & 71.50 & 100.00 \\
-French (fr) & 19.00 & 31742 & 68.89 & 99.72 \\
-Hindi (hi) & 16.12 & 37429 & 64.75 & 100.00 \\
-Japanese (ja) & 16.18 & 37282 & 50.92 & 100.00 \\
-Marathi (mr) & 17.02 & 35434 & 58.45 & 100.00 \\
-Punjabi (pa) & 19.30 & 31258 & 61.53 & 100.00 \\
-Tamil (ta) & 18.77 & 32144 & 64.10 & 100.00 \\
-Telugu (te) & 19.15 & 31502 & 65.28 & 100.00 \\
-Chinese (zh) & 16.73 & 36059 & 39.84 & 99.72 \\
+Arabic (ar) & 18.28 & 32991 & 99.72 \\
+Bengali (bn) & 18.38 & 32828 & 100.00 \\
+German (de) & 17.83 & 33841 & 99.44 \\
+Spanish (es) & 17.62 & 34232 & 100.00 \\
+French (fr) & 19.00 & 31742 & 99.72 \\
+Hindi (hi) & 16.12 & 37429 & 100.00 \\
+Japanese (ja) & 16.18 & 37282 & 100.00 \\
+Marathi (mr) & 17.02 & 35434 & 100.00 \\
+Punjabi (pa) & 19.30 & 31258 & 100.00 \\
+Tamil (ta) & 18.77 & 32144 & 100.00 \\
+Telugu (te) & 19.15 & 31502 & 100.00 \\
+Chinese (zh) & 16.73 & 36059 & 99.72 \\
 \midrule
-\textbf{All} & \bfseries 214.4 & \bfseries 33760 & \bfseries 63.29 & \bfseries 99.88 \\
+\textbf{All} & \bfseries 214.4 & \bfseries 33760 & \bfseries 99.88 \\
 \bottomrule
 \end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption[Translation quality of the full KDE4 run]{Translation quality of the full KDE4 run. chrF, BLEU and spBLEU use
+all 10,054 strings per language; COMET uses the same fixed sample of 1,000 strings in every language.}
+\label{tab:kde4quality}
+\begin{tabular}{@{}l S[table-format=2.2] S[table-format=2.2] S[table-format=2.2] S[table-format=1.4]@{}}
+\toprule
+\textbf{Language} & {\textbf{chrF}} & {\textbf{BLEU}} & {\textbf{spBLEU}} & {\textbf{COMET}} \\
+\midrule
+Arabic (ar) & 55.42 & 32.45 & 39.44 & 0.8296 \\
+Bengali (bn) & 64.38 & 37.38 & 52.52 & 0.8866 \\
+German (de) & 64.22 & 39.92 & 45.88 & 0.8639 \\
+Spanish (es) & 71.50 & 50.65 & 53.15 & 0.8704 \\
+French (fr) & 68.89 & 44.18 & 46.65 & 0.8495 \\
+Hindi (hi) & 64.75 & 43.24 & 49.75 & 0.8526 \\
+Japanese (ja) & 50.92 & 32.35 & 39.07 & 0.8643 \\
+Marathi (mr) & 58.45 & 35.76 & 44.38 & 0.8249 \\
+Punjabi (pa) & 61.53 & 38.56 & 50.42 & 0.8689 \\
+Tamil (ta) & 64.10 & 37.75 & 49.53 & 0.8840 \\
+Telugu (te) & 65.28 & 40.85 & 53.82 & 0.8932 \\
+Chinese (zh) & 39.84 & 42.48 & 42.55 & 0.8530 \\
+\midrule
+\textbf{All} & \bfseries 63.29 & {\bfseries 39.63$^{\ast}$} & \bfseries 47.90 & \bfseries 0.8617 \\
+\bottomrule
+\end{tabular}
+
+\smallskip
+{\footnotesize $^{\ast}$Mean of the 12 languages: BLEU uses different word splitting for Chinese and Japanese, so a single
+corpus score across languages is not meaningful. spBLEU uses the same pieces for every language.}
 \end{table}
 
 \begin{figure}[H]
@@ -45,14 +76,21 @@ Chinese (zh) & 16.73 & 36059 & 39.84 & 99.72 \\
 \begin{tikzpicture}
 \begin{axis}[reportbars, width=\linewidth, height=5.2cm, bar width=12pt,
   symbolic x coords={ar,bn,de,es,fr,hi,ja,mr,pa,ta,te,zh}, xtick=data,
-  ylabel={chrF}, ymin=0, ymax=80, enlarge x limits=0.05,
-  nodes near coords, nodes near coords style={font=\tiny, rotate=90, anchor=west}]
-\addplot[fill=cnew!80, draw=cnew] coordinates {(ar,55.42) (bn,64.38) (de,64.22) (es,71.50) (fr,68.89) (hi,64.75) (ja,50.92) (mr,58.45) (pa,61.53) (ta,64.10) (te,65.28) (zh,39.84)};
+  ylabel={COMET}, ymin=0.78, ymax=0.91, enlarge x limits=0.05,
+  yticklabel style={/pgf/number format/fixed, /pgf/number format/precision=2},
+  nodes near coords, nodes near coords style={font=\tiny, rotate=90, anchor=west, /pgf/number format/fixed, /pgf/number format/fixed zerofill, /pgf/number format/precision=3}]
+\addplot[fill=cnew!80, draw=cnew] coordinates {(ar,0.8296) (bn,0.8866) (de,0.8639) (es,0.8704) (fr,0.8495) (hi,0.8526) (ja,0.8643) (mr,0.8249) (pa,0.8689) (ta,0.8840) (te,0.8932) (zh,0.8530)};
 \end{axis}
 \end{tikzpicture}
-\caption[chrF per language in the full KDE4 run]{chrF per language in the full KDE4 run. Chinese and Japanese score lowest, as in every earlier test.}
+\caption[COMET per language in the full KDE4 run]{COMET per language in the full KDE4 run (1,000-string sample per
+language). Every language lies between 0.82 and 0.90.}
 \label{fig:kde4chrf}
 \end{figure}
+
+\paragraph{Reading the metrics together.} The four metrics agree on most languages, with one exception. chrF places
+Chinese far below every other language (39.84), but BLEU (42.48), spBLEU (42.55) and COMET (0.853) put it in the middle.
+chrF compares sequences of up to six characters, which is harsh for Chinese, where a word is often one or two
+characters; COMET, which judges meaning with a neural model, is the fairer comparison across scripts.
 
 \paragraph{Where the time goes.} Translation took \textbf{3~h~34~min} (3~h~38~min for the whole run, including model
 loading and Phases~1 and~3). Model inference accounted for 99.6\% of Phase~2; Translation Memory reads and writes took
@@ -67,5 +105,5 @@ difference is the work the benchmark does not time: tokenization, placeholder ha
 of each 1,000-string chunk, where only one batch is left for the two cores.
 
 \keyresult{\textbf{RQ3.} The optimized pipeline translated the whole twelve-language KDE4 corpus (120,648 translations)
-in 3.6 hours with no failures, at 33,760 translations per hour, chrF 63.29 and 99.88\% of placeholders kept: about
-2.5\x{} faster than the semester's starting configuration.}
+in 3.6 hours with no failures, at 33,760 translations per hour, with chrF 63.29, spBLEU 47.90, COMET 0.862 and
+99.88\% of placeholders kept: about 2.5\x{} faster than the semester's starting configuration.}

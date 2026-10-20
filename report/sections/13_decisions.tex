@@ -25,8 +25,8 @@ lookups indexed.
 It makes reuse safe across model and setting changes without manual cleanup: older entries simply stop matching.
 
 \subsection{Why base punctuation rules on counts?}
-The first, guessed rules made Japanese reuse worse than fresh translation. Counting how every reference ends turned the
-result from a loss into a gain.
+The first, guessed rules made Japanese reuse worse than fresh translation. Counting how every reference ends brought
+every language to equal or better chrF than fresh translation, and COMET confirmed equal quality.
 
 \subsection{Why test the memory with commit-like versions?}
 A memory only pays off across runs. Versions with genuinely new strings, run in sequence with the memory kept, measure

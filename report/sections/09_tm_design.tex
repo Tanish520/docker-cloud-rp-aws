@@ -107,9 +107,11 @@ Chinese & 477 & 51 & 33.78 & 43.82 \\
 \label{fig:twins}
 \end{figure}
 
-\paragraph{Finding.} Adapted translations score \textbf{equal or higher in all twelve languages} (mean 62.63 against
-60.26), with placeholders kept 100\% in both. Reuse can score higher because the model translates each string in
-isolation and is sometimes inconsistent: it may translate ``Points'' well in ``42 Points'' but poorly in ``78 Points''.
-Reuse applies the same translation to every twin, which also makes the localized application more consistent. Refusals
+\paragraph{Finding.} By chrF, adapted translations score \textbf{equal or higher in all twelve languages} (mean 62.63
+against 60.26), with placeholders kept 100\% in both. chrF rewards consistency: the model translates each string in
+isolation and may translate ``Points'' one way in ``42 Points'' and another in ``78 Points'', while reuse applies the same
+translation to every twin. A COMET check on the strings where reuse actually changed the output
+(Chapter~\ref{sec:tmexp}) shows \textbf{equal} quality rather than higher, so the benefit of reuse is saved model work
+and a more consistent application, at unchanged quality. Refusals
 (8\%) were mostly strings whose numbers the model wrote in local digits; those strings were simply translated as before.
 Near-twin reuse is enabled by default.

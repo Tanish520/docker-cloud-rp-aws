@@ -50,4 +50,4 @@ Per-run fixes & 3.1 min & measured end to end on the ready runner (Table~\ref{ta
 Batching made every model call cheaper (about 2.5\x{} at full scale); the Translation Memory removed most model calls
 altogether; and the per-run fixes removed most of the set-up around them. Overall, a typical commit went from roughly
 1.9 hours to 3.1 minutes, while quality was preserved at every step: identical output for batching layout and parallelism,
-a 0.45-point chrF trade-off for beam~2, more placeholders kept, and unchanged chrF with the memory.
+a 0.45-point chrF trade-off for beam~2, more placeholders kept, and unchanged chrF, BLEU and COMET with the memory.

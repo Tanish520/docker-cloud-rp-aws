@@ -16,5 +16,5 @@ than shipped broken.
 The redesigned Translation Memory changed the economics of the pipeline. Because it persists, records the engine that
 produced each entry, loads once per language and reuses near-identical strings, the cost of a run now follows the size of
 the change rather than the size of the application: 1\%, 5\% and 10\% commits ran 25\x{}, 14\x{} and 8.4\x{} faster with
-90--98\% fewer model tokens and unchanged quality. Removing the remaining per-run set-up brought a typical 5\% commit to
+90--98\% fewer model tokens and unchanged quality by chrF, BLEU and COMET. Removing the remaining per-run set-up brought a typical 5\% commit to
 3.1 minutes end to end, from roughly 1.9 hours at the start of the semester.

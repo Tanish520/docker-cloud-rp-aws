@@ -20,7 +20,7 @@
 \usepackage{enumitem}
 \setlist{itemsep=2pt,topsep=4pt}
 \usepackage{siunitx}
-\sisetup{group-separator={,},group-minimum-digits=4}
+\sisetup{group-separator={,},group-minimum-digits=4,group-digits=integer}
 
 % ---------- Charts and diagrams ----------
 \usepackage{pgfplots}
@@ -162,7 +162,7 @@ academic environment and resources that made this work possible, and the Track~1
 twelve-language KDE4 dataset used throughout our evaluation.
 
 We also acknowledge the open-source communities behind \textbf{NLLB-200}, \textbf{CTranslate2}, \textbf{Hugging Face
-Transformers}, \textbf{SacreBLEU}, the \textbf{OPUS KDE4} corpus and the \textbf{FLORES-200} benchmark.
+Transformers}, \textbf{SacreBLEU}, \textbf{COMET}, the \textbf{OPUS KDE4} corpus and the \textbf{FLORES-200} benchmark.
 \clearpage
 
 % =================== Abstract ===================
@@ -179,7 +179,8 @@ wasted 30\% of the model's input on padding, and that the machine's two cores we
 length cut padding to 4\% but gained only 3\%: padding was not the bottleneck. Reducing the beam size from 5 to 2 made
 translation 2.2\x{} faster for a 0.45-point chrF loss, and translating two batches in parallel with an output length cap
 added 1.27\x{} with identical output. A full production run translated all 10,054 usable KDE4 strings into 12 languages
-(120,648 translations) in 3.6 hours with no failures, about 2.5\x{} faster than the semester's starting configuration.
+(120,648 translations) in 3.6 hours with no failures, about 2.5\x{} faster than the semester's starting configuration, at chrF 63.29, spBLEU 47.90 and
+COMET 0.862.
 
 \textbf{Quality safeguards.} Placeholder protection raised the share of strings whose placeholders survive translation
 from 87.7\% to 99.88\%. The run also revealed that 6.1\% of Chinese outputs silently lost characters the model cannot
@@ -188,7 +189,8 @@ write; these strings are now kept in English and reported instead of being shipp
 \textbf{Translation Memory.} The memory was rebuilt to persist between runs, to record which model and settings produced
 each translation, to load once per language per run, and to reuse near-identical strings. In a simulated CI/CD history,
 commits that change 1\%, 5\% and 10\% of an application ran 25\x{}, 14\x{} and 8.4\x{} faster than the previous
-pipeline with 98.4\%, 95.0\% and 90.6\% fewer model tokens, at unchanged quality (chrF 63.38 versus 63.37). Removing the
+pipeline with 98.4\%, 95.0\% and 90.6\% fewer model tokens, at unchanged quality (chrF 63.38 versus 63.37, spBLEU
+48.07 versus 48.04). Removing the
 remaining per-run set-up costs then cut a 5\% commit, measured end to end, from 5.9 to 3.1 minutes. Overall, such a
 commit went from roughly 1.9 hours at the start of the semester to 3.1 minutes.
 \clearpage

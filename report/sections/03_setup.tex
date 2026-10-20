@@ -54,6 +54,9 @@ Model tokens & real tokens read and written by the model (tokenizer counts) \\
 Padding & share of the model's input positions filled with padding inside batches \\
 CPU busy & CPU time used divided by wall time $\times$ available cores \\
 chrF & character n-gram F-score~\cite{chrf} against the reference translations, computed with SacreBLEU~\cite{sacrebleu} (0--100, higher is better) \\
+BLEU & word n-gram precision score against the references (SacreBLEU \code{13a}; Chinese \code{zh}; Japanese MeCab) \\
+spBLEU & BLEU on FLORES-200 SentencePiece pieces~\cite{flores}, comparable across scripts \\
+COMET & neural quality estimate (\code{Unbabel/wmt22-comet-da}~\cite{comet}, 0--1) on the same 1,000 random strings in every language \\
 Placeholders kept & share of strings with placeholders whose output contains exactly the same placeholders \\
 Cost & machine time $\times$ on-demand price \\
 \bottomrule
