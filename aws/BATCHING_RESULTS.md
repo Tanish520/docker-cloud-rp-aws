@@ -752,3 +752,53 @@ These savings are realized only when the RDS instance and the ODBC driver are re
 **Raw data:**
 - `aws-results/s3-memory/` and `aws-results/s3-memory-2/` (telemetry, step timings, outputs);
 - runs `ec2-20261018t214617z-*` and `ec2-20261018t225738z-*` in S3 and CloudWatch.
+
+## 16. BLEU, spBLEU and COMET (2026-10-20)
+
+**Why:** sections 8–15 reported chrF and placeholder survival only. This section adds the lexical and neural metrics that the previous semester's report and the Track 1 team use, computed on the saved outputs with `tools/kde4.py score`.
+
+**Method:**
+- **BLEU:** SacreBLEU 2.4.3, with the `13a` tokenizer; `zh` for Chinese and `ja-mecab` (MeCab) for Japanese.
+- **spBLEU:** BLEU on FLORES-200 SentencePiece pieces (`flores200`), the usual cross-language BLEU for NLLB.
+- **COMET:** `Unbabel/wmt22-comet-da` (unbabel-comet 2.2.6, CPU), on the **same fixed random sample of 1,000 strings in every language** (seed 2026), 12,000 translations. The full 120,648 would take about 5–6 hours on CPU, at about 6 translations per second.
+- **Not scorable:** the beam-size and placeholder benchmarks (sections 3–10) kept chrF scores only, not their outputs, so BLEU and COMET cannot be added for them without re-running them.
+
+**Full KDE4 run (section 11), all 10,054 strings × 12 languages:**
+
+| Lang | chrF | BLEU | spBLEU | COMET (1,000-string sample) |
+|---|---:|---:|---:|---:|
+| ar | 55.42 | 32.45 | 39.44 | 0.8296 |
+| bn | 64.38 | 37.38 | 52.52 | 0.8866 |
+| de | 64.22 | 39.92 | 45.88 | 0.8639 |
+| es | 71.50 | 50.65 | 53.15 | 0.8704 |
+| fr | 68.89 | 44.18 | 46.65 | 0.8495 |
+| hi | 64.75 | 43.24 | 49.75 | 0.8526 |
+| ja | 50.92 | 32.35 (MeCab) | 39.07 | 0.8643 |
+| mr | 58.45 | 35.76 | 44.38 | 0.8249 |
+| pa | 61.53 | 38.56 | 50.42 | 0.8689 |
+| ta | 64.10 | 37.75 | 49.53 | 0.8840 |
+| te | 65.28 | 40.85 | 53.82 | 0.8932 |
+| zh | 39.84 | 42.48 (zh) | 42.55 | 0.8530 |
+| **All** | **63.29** | 39.63 (mean of 12) | **47.90** | **0.8617** |
+
+**Chinese:** chrF (39.84) ranks it far below every other language, but BLEU (42.48), spBLEU (42.55) and COMET (0.853) place it in the middle. chrF's character 6-grams are harsh on Chinese, where a word is one or two characters; COMET is the fairer comparison across scripts.
+
+**Translation memory experiment (section 13), v4 = 2,200 strings × 12 languages:**
+
+| Run | chrF | spBLEU | BLEU (mean of 12) |
+|---|---:|---:|---:|
+| v4 served from the memory | 63.38 | 48.07 | 40.52 |
+| v4 from scratch (previous pipeline) | 63.37 | 48.04 | 40.45 |
+| v1 first release | 63.38 | 48.18 | 40.88 |
+
+- **How much differs:** the two v4 runs differ in only **170 of 26,400** translations, the strings adapted from near-twins.
+- **COMET on exactly those 170:** **0.8654 from the memory against 0.8689 from scratch**; the memory version scores higher on 80, the scratch version on 81. chrF on the same strings is 58.06 against 55.25.
+
+**Correction to section 13.3:**
+- **What it said:** near-twin reuse scored *higher* than fresh translation, based on chrF.
+- **What COMET shows:** **equal** quality, a 0.0035 difference and an even split.
+- **Revised claim:** near-twin reuse matches fresh translation in quality, and makes the same term consistent across strings.
+
+**Raw data:**
+- `aws-results/ec2-20261016t214343z/scores-bleu.json` and `scores-comet.json`;
+- `aws-results/ec2-20261017t175415z/scores-bleu-*.json` and `comet-differing.json`.
